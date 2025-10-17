@@ -738,17 +738,194 @@ elif page == "📊 Results":
     
     st.markdown("---")
     
-    # Inline HTML preview
-    st.subheader("🌐 Interactive Report Preview")
+    # Native Streamlit visualization display
+    st.subheader("🌐 Interactive Results Viewer")
     
-    if index_path.exists():
-        try:
-            html = index_path.read_text(encoding="utf-8")
-            st.components.v1.html(html, height=850, scrolling=True)
-        except Exception as e:
-            st.info("Could not preview report. Please download the ZIP above.")
+    if tsv_path.exists() and comp_dir.exists():
+        df = pd.read_csv(tsv_path, sep='\t')
+        
+        # Group by tier
+        tier_a = df[df['Tier'] == 'A'] if 'Tier' in df.columns else pd.DataFrame()
+        tier_b = df[df['Tier'] == 'B'] if 'Tier' in df.columns else pd.DataFrame()
+        other = df[~df['Tier'].isin(['A', 'B'])] if 'Tier' in df.columns else df
+        
+        # Display Tier A pairs (priority)
+        if len(tier_a) > 0:
+            st.markdown("### 🚨 Tier A - Review Required")
+            st.caption(f"{len(tier_a)} high-confidence duplicate{'s' if len(tier_a) > 1 else ''} detected")
+            
+            for seq_num, (idx, row) in enumerate(tier_a.iterrows(), start=1):
+                pair_path_a = row.get('Path_A', row.get('Image_A', ''))
+                pair_path_b = row.get('Path_B', row.get('Image_B', ''))
+                img_a_name = Path(pair_path_a).name if pair_path_a else f"Image A"
+                img_b_name = Path(pair_path_b).name if pair_path_b else f"Image B"
+                
+                with st.expander(f"**Pair #{seq_num:03d}**: {img_a_name} vs {img_b_name}", expanded=(seq_num == 1)):
+                    # Find the pair directory
+                    pair_dir = comp_dir / f"pair_{seq_num:03d}_detailed"
+                    
+                    # Display scores
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        clip_val = row.get('Cosine_Similarity', 'N/A')
+                        if pd.notna(clip_val) and clip_val != '':
+                            st.metric("🎯 CLIP", f"{float(clip_val):.3f}")
+                        else:
+                            st.metric("🎯 CLIP", "N/A")
+                    with col2:
+                        ssim_val = row.get('SSIM', 'N/A')
+                        if pd.notna(ssim_val) and ssim_val != '':
+                            st.metric("📊 SSIM", f"{float(ssim_val):.3f}")
+                        else:
+                            st.metric("📊 SSIM", "N/A")
+                    with col3:
+                        phash_val = row.get('Hamming_Distance', 'N/A')
+                        if pd.notna(phash_val) and phash_val != '':
+                            st.metric("🔍 pHash", f"{int(phash_val)}")
+                        else:
+                            st.metric("🔍 pHash", "N/A")
+                    with col4:
+                        tier_path = row.get('Tier_Path', 'N/A')
+                        if pd.notna(tier_path) and tier_path != '':
+                            st.metric("🎯 Path", tier_path)
+                        else:
+                            st.metric("🎯 Path", "N/A")
+                    
+                    # Display visualizations if they exist
+                    if pair_dir.exists():
+                        # Image comparison slider
+                        img_a_path = pair_dir / "1_raw_A.png"
+                        img_b_path = pair_dir / "2_raw_B_aligned.png"
+                        
+                        if img_a_path.exists() and img_b_path.exists():
+                            st.markdown("**📷 Side-by-Side Comparison**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(str(img_a_path), caption="Image A (Original)", use_container_width=True)
+                            with col2:
+                                st.image(str(img_b_path), caption="Image B (Aligned)", use_container_width=True)
+                        
+                        # Additional visualizations in tabs
+                        overlay_path = pair_dir / "3_overlay_50_50.png"
+                        ssim_path = pair_dir / "4_ssim_viridis.png"
+                        diff_path = pair_dir / "5_hard_diff_mask.png"
+                        checker_path = pair_dir / "6_checkerboard.png"
+                        blink_path = pair_dir / "7_blink.gif"
+                        
+                        available_viz = []
+                        if overlay_path.exists(): available_viz.append("Overlay")
+                        if ssim_path.exists(): available_viz.append("SSIM Map")
+                        if diff_path.exists(): available_viz.append("Diff Mask")
+                        if checker_path.exists(): available_viz.append("Checkerboard")
+                        if blink_path.exists(): available_viz.append("Blink GIF")
+                        
+                        if available_viz:
+                            st.markdown("**🎨 Advanced Visualizations**")
+                            viz_tabs = st.tabs(available_viz)
+                            
+                            tab_idx = 0
+                            if "Overlay" in available_viz:
+                                with viz_tabs[tab_idx]:
+                                    st.image(str(overlay_path), caption="50/50 Overlay", use_container_width=True)
+                                tab_idx += 1
+                            if "SSIM Map" in available_viz:
+                                with viz_tabs[tab_idx]:
+                                    st.image(str(ssim_path), caption="SSIM Dissimilarity Map", use_container_width=True)
+                                    st.caption("🟢 Green = Similar | 🔴 Red = Different")
+                                tab_idx += 1
+                            if "Diff Mask" in available_viz:
+                                with viz_tabs[tab_idx]:
+                                    st.image(str(diff_path), caption="Hard Difference Mask", use_container_width=True)
+                                tab_idx += 1
+                            if "Checkerboard" in available_viz:
+                                with viz_tabs[tab_idx]:
+                                    st.image(str(checker_path), caption="Checkerboard Composite", use_container_width=True)
+                                tab_idx += 1
+                            if "Blink GIF" in available_viz:
+                                with viz_tabs[tab_idx]:
+                                    st.image(str(blink_path), caption="Blink Comparator", use_container_width=True)
+                        
+                        # Download links for HTML versions
+                        st.markdown("**📥 Download Interactive HTML**")
+                        col1, col2 = st.columns(2)
+                        
+                        interactive_html = pair_dir / "interactive.html"
+                        offline_html = pair_dir / "interactive_offline.html"
+                        
+                        with col1:
+                            if interactive_html.exists():
+                                st.download_button(
+                                    "📊 Interactive (CDN)",
+                                    data=interactive_html.read_bytes(),
+                                    file_name=f"pair_{seq_num:03d}_interactive.html",
+                                    mime="text/html",
+                                    key=f"cdn_{seq_num}",
+                                    use_container_width=True
+                                )
+                        
+                        with col2:
+                            if offline_html.exists():
+                                st.download_button(
+                                    "💾 Offline Slider",
+                                    data=offline_html.read_bytes(),
+                                    file_name=f"pair_{seq_num:03d}_offline.html",
+                                    mime="text/html",
+                                    key=f"offline_{seq_num}",
+                                    use_container_width=True
+                                )
+                    else:
+                        st.info(f"Visualizations not found for pair #{seq_num:03d}")
+                    
+                    st.markdown("---")
+        
+        # Display Tier B pairs (collapsible)
+        if len(tier_b) > 0:
+            with st.expander(f"⚠️ Tier B - Manual Check ({len(tier_b)} pairs)", expanded=False):
+                st.caption("These pairs require manual verification")
+                
+                for seq_num in range(len(tier_a) + 1, len(tier_a) + len(tier_b) + 1):
+                    idx = tier_b.index[seq_num - len(tier_a) - 1]
+                    row = tier_b.loc[idx]
+                    
+                    pair_path_a = row.get('Path_A', row.get('Image_A', ''))
+                    pair_path_b = row.get('Path_B', row.get('Image_B', ''))
+                    img_a_name = Path(pair_path_a).name if pair_path_a else f"Image A"
+                    img_b_name = Path(pair_path_b).name if pair_path_b else f"Image B"
+                    
+                    st.markdown(f"**Pair #{seq_num:03d}**: {img_a_name} vs {img_b_name}")
+                    
+                    pair_dir = comp_dir / f"pair_{seq_num:03d}_detailed"
+                    if pair_dir.exists():
+                        img_a_path = pair_dir / "1_raw_A.png"
+                        img_b_path = pair_dir / "2_raw_B_aligned.png"
+                        
+                        if img_a_path.exists() and img_b_path.exists():
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(str(img_a_path), use_container_width=True)
+                            with col2:
+                                st.image(str(img_b_path), use_container_width=True)
+                    
+                    st.markdown("---")
+        
+        # Display other pairs (if any)
+        if len(other) > 0:
+            with st.expander(f"📋 Other Pairs ({len(other)} pairs)", expanded=False):
+                st.caption("Lower confidence pairs")
+                for seq_num in range(len(tier_a) + len(tier_b) + 1, len(tier_a) + len(tier_b) + len(other) + 1):
+                    idx_in_other = seq_num - len(tier_a) - len(tier_b) - 1
+                    if idx_in_other < len(other):
+                        idx = other.index[idx_in_other]
+                        row = other.loc[idx]
+                        
+                        pair_path_a = row.get('Path_A', row.get('Image_A', ''))
+                        pair_path_b = row.get('Path_B', row.get('Image_B', ''))
+                        img_a_name = Path(pair_path_a).name if pair_path_a else f"Image A"
+                        img_b_name = Path(pair_path_b).name if pair_path_b else f"Image B"
+                        
+                        st.markdown(f"**Pair #{seq_num:03d}**: {img_a_name} vs {img_b_name}")
     else:
-        st.info("No HTML report found. Download TSV above for raw data.")
+        st.info("No results found. Please download the ZIP file above to view all visualizations offline.")
     
     st.markdown("---")
     
