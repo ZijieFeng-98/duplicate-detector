@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ai_env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Output
+ai_clip_output/
+duplicate_detector/
+*.pdf
+*.zip
+
+# Cache
+*.npy
+*.pkl
+cache/
+
+
