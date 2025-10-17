@@ -17,6 +17,18 @@ import cv2
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Tile detection module (optional)
+try:
+    from tile_detection import (
+        TileConfig,
+        run_tile_detection_pipeline,
+        apply_tile_evidence_to_dataframe
+    )
+    TILE_MODULE_AVAILABLE = True
+except ImportError:
+    TILE_MODULE_AVAILABLE = False
+    print("⚠️  Tile detection module not found, using panel-level only")
+
 # --- CONFIG -------------------------------------------------------------------
 PDF_PATH = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/STM-Combined Figures.pdf")
 OUT_DIR  = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/ai_clip_output")
@@ -4655,6 +4667,41 @@ def main():
                 if pd.notna(path):
                     print(f"        • {path}: {count} pair(s)")
     
+    # ═══ TILE-BASED DETECTION (OPTIONAL) ═══
+    if TILE_MODULE_AVAILABLE and hasattr(args, 'enable_tile_mode') and args.enable_tile_mode:
+        import re
+        
+        # Build page map from panel paths
+        page_map = {}
+        for panel_path in panels:
+            panel_name = Path(panel_path).name
+            match = re.search(r'page[_-]?(\d+)', panel_name, re.I)
+            if match:
+                page_map[str(panel_path)] = int(match.group(1))
+            else:
+                page_map[str(panel_path)] = 0
+        
+        # Configure tile detection
+        tile_config = TileConfig()
+        tile_config.ENABLE_TILE_MODE = True
+        
+        # Run tile detection pipeline
+        all_tiles, tile_matches = run_tile_detection_pipeline(
+            panel_paths=[str(p) for p in panels],
+            modality_cache={str(k): v for k, v in modality_cache.items()},
+            page_map=page_map,
+            config=tile_config
+        )
+        
+        # Apply tile evidence to tiers
+        if len(tile_matches) > 0:
+            df_merged = apply_tile_evidence_to_dataframe(df_merged, tile_matches, tile_config)
+            
+            # Update stage counts after tile evidence
+            if USE_TIER_GATING:
+                stage_counts['tier_a'] = len(df_merged[df_merged.get('Tier') == 'A'])
+                stage_counts['tier_b'] = len(df_merged[df_merged.get('Tier') == 'B'])
+    
     final_path = OUT_DIR / "final_merged_report.tsv"
     df_merged.to_csv(final_path, sep="\t", index=False)
     
@@ -4754,6 +4801,11 @@ def parse_cli_args():
     # ORB relax feature flag
     parser.add_argument("--enable-orb-relax", action="store_true", default=False, help="Enable high-confidence relaxed ORB detection for tough partial duplicates")
     parser.add_argument("--disable-orb-relax", action="store_true", help="Explicitly disable ORB relax (overrides config file)")
+    
+    # Tile-based detection (EXPERIMENTAL)
+    parser.add_argument("--enable-tile-mode", dest="enable_tile_mode", action="store_true", help="Enable sub-panel tile verification for confocal grids (EXPERIMENTAL)")
+    parser.add_argument("--disable-tile-mode", dest="enable_tile_mode", action="store_false", help="Disable tile mode")
+    parser.set_defaults(enable_tile_mode=False)
     
     # Output customization
     parser.add_argument("--out-suffix", type=str, default="", help="Append suffix to output directory for this run")
