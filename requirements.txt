@@ -1,31 +1,31 @@
 # Streamlit Duplicate Detection Studio
-# Requirements for cloud deployment
+# Requirements for cloud deployment (Python 3.12)
 
 # Web framework
-streamlit==1.31.0
+streamlit>=1.31.0
 
 # Visualization
-plotly==5.18.0
+plotly>=5.18.0
 
 # Data processing
-pandas==2.1.4
-numpy==1.26.3
+pandas>=2.2.0
+numpy>=1.26.0,<2.0.0
 
 # Deep learning (CPU-only for Streamlit Cloud)
-torch==2.1.2
-torchvision==0.16.2
-open-clip-torch==2.24.0
+torch>=2.2.0
+torchvision>=0.17.0
+open-clip-torch>=2.24.0
 
 # PDF processing (PyMuPDF - no system dependencies needed!)
-pymupdf==1.23.8
+pymupdf>=1.23.0
 
 # Image processing
-Pillow==10.2.0
-opencv-python-headless==4.9.0.80
-imagehash==4.3.1
-scikit-image==0.22.0
+Pillow>=10.0.0
+opencv-python-headless>=4.9.0
+imagehash>=4.3.0
+scikit-image>=0.22.0
 
 # Utilities
-tqdm==4.66.1
-scipy==1.11.4
+tqdm>=4.66.0
+scipy>=1.11.0
 
