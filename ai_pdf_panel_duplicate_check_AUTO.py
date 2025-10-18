@@ -2204,6 +2204,42 @@ def compute_robust_exposure_stats(img: np.ndarray, tile_size: int = 64) -> Tuple
     
     return median_map, mad_map
 
+def check_boundary_continuity(img: np.ndarray, flagged_tiles: list, tile_size: int = 64) -> bool:
+    """
+    Check if exposure anomaly has sharp boundary discontinuity.
+    
+    Method: Compute gradient magnitude at tile boundaries.
+    Returns: True if discontinuity present (suspicious)
+    
+    Reference: Forensic detection of selective brightness manipulation
+    """
+    if len(flagged_tiles) == 0:
+        return False
+    
+    if len(img.shape) == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Compute edges
+    edges = cv2.Canny(img, 50, 150)
+    edge_density_total = np.sum(edges > 0) / edges.size
+    
+    # Check boundary edge density for flagged tiles
+    boundary_strength = 0.0
+    for (i, j) in flagged_tiles:
+        y, x = i * tile_size, j * tile_size
+        
+        # Extract boundary regions (2px border)
+        if y > 0:  # Top boundary
+            top_edge = edges[max(0, y-2):y+2, x:min(x+tile_size, edges.shape[1])]
+            boundary_strength = max(boundary_strength, np.sum(top_edge > 0) / max(top_edge.size, 1))
+        
+        if x > 0:  # Left boundary
+            left_edge = edges[y:min(y+tile_size, edges.shape[0]), max(0, x-2):x+2]
+            boundary_strength = max(boundary_strength, np.sum(left_edge > 0) / max(left_edge.size, 1))
+    
+    # Threshold: boundary edges 3x stronger than image average = discontinuity
+    return boundary_strength > 3.0 * edge_density_total if edge_density_total > 0 else False
+
 def detect_selective_brightness(img: np.ndarray, tile_size: int = 64,
                                 z_threshold: float = 4.0) -> dict:
     """Detect localized exposure manipulation with gradient safeguards"""
@@ -2255,7 +2291,11 @@ def detect_selective_brightness(img: np.ndarray, tile_size: int = 64,
         result['max_z_score'] = float(max_z)
         result['flagged_tiles'] = flagged
         result['flagged_area_pct'] = flagged_area_pct
-        result['is_suspicious'] = max_z >= z_threshold
+        
+        # NEW: Check boundary continuity for more robust detection
+        result['has_boundary_discontinuity'] = check_boundary_continuity(img_gray, flagged, tile_size)
+        result['is_suspicious'] = (max_z >= z_threshold and 
+                                   result['has_boundary_discontinuity'])  # Now requires discontinuity
     
     return result
 
@@ -2932,16 +2972,51 @@ def generate_methods_description(**kwargs) -> str:
 - Trigger: CLIP ≥ {ORB_TRIGGER_CLIP_THRESHOLD} OR pHash ≤ {ORB_TRIGGER_PHASH_THRESHOLD}
 - Gates: Inliers ≥ {TIER_A_ORB_INLIERS}, Ratio ≥ {TIER_A_ORB_RATIO}, Error ≤ {TIER_A_ORB_ERROR}px
 
+## Advanced Discrimination Layers
+
+### CLIP Z-Score (Self-Normalized Outlier Detection)
+- **Purpose**: Filters semantic lookalikes (same modality, different content)
+- **Formula**: z_ij = min((s_ij - μ_i)/σ_i, (s_ij - μ_j)/σ_j)
+- **Gate**: z ≥ {CLIP_ZSCORE_MIN}
+- **Why it works**: Grid panels have many similar neighbors → low z-scores; true duplicates are outliers → high z-scores
+
+### Patch-Wise SSIM (MS-SSIM-Lite)
+- **Purpose**: Defeats "similar-but-different" grids and backgrounds
+- **Grid**: {SSIM_GRID_H}×{SSIM_GRID_W} patches per image
+- **Aggregation**: Average top-{SSIM_TOPK_PATCHES} local SSIMs
+- **Mix**: {SSIM_MIX_WEIGHT}×patch + {1.0-SSIM_MIX_WEIGHT}×global
+- **Gate**: Minimum patch SSIM ≥ {SSIM_PATCH_MIN_GATE}
+
+### Deep Verify (Confocal/IHC Robust Confirmation)
+- **Method**: ECC alignment + SSIM + NCC + pHash bundle (8 transforms)
+- **Confocal**: SSIM ≥ {DEEP_VERIFY_ALIGN_SSIM_MIN}, NCC ≥ {DEEP_VERIFY_NCC_MIN}, OR pHash ≤ {DEEP_VERIFY_PHASH_MAX}
+- **IHC**: Stain-robust channel extraction + alignment + verification
+- **Critical**: Calculation-only (no page heuristics)
+
 ## Tier Classification
-**Tier A (Review Required)**: pHash-RT ≤ {TIER_A_PHASH_RT} OR (CLIP ≥ {TIER_A_CLIP} AND SSIM ≥ {TIER_A_SSIM}) OR ORB-RANSAC pass
-**Tier B (Manual Check)**: pHash-RT {TIER_B_PHASH_RT_MIN}-{TIER_B_PHASH_RT_MAX} OR (CLIP {TIER_B_CLIP_MIN}-{TIER_B_CLIP_MAX} AND SSIM {TIER_B_SSIM_MIN}-{TIER_B_SSIM_MAX})
+**Tier A (Review Required)**: 
+- pHash-RT ≤ {TIER_A_PHASH_RT}, OR
+- (CLIP ≥ {TIER_A_CLIP} AND SSIM ≥ {TIER_A_SSIM}), OR
+- ORB-RANSAC pass, OR
+- Deep Verify confirmation
+
+**Tier B (Manual Check)**: 
+- pHash-RT {TIER_B_PHASH_RT_MIN}-{TIER_B_PHASH_RT_MAX}, OR
+- (CLIP {TIER_B_CLIP_MIN}-{TIER_B_CLIP_MAX} AND SSIM {TIER_B_SSIM_MIN}-{TIER_B_SSIM_MAX}), OR
+- Confocal FP candidates (high CLIP, low SSIM)
+
+## Forensic Adjuncts (Advisory)
+- **Copy-Move Detection**: Two-stage (DCT block proposal + ORB-RANSAC confirmation)
+- **Selective Brightness**: Robust exposure stats (median/MAD) with boundary continuity check
+- **ELA**: Conditional on JPEG-origin detection (PDF rasterization caveat)
 
 ## Calibration
-Thresholds target FPR ≤ 0.5% on hard negatives.
+Thresholds target FPR ≤ 0.5% on hard negatives (same modality, different content).
 
-Seed: {kwargs.get('random_seed', RANDOM_SEED)}
-Device: {kwargs.get('device', 'N/A')}
-Timestamp: {kwargs.get('timestamp', datetime.now().isoformat())}
+**Run Parameters**:
+- Seed: {kwargs.get('random_seed', RANDOM_SEED)}
+- Device: {kwargs.get('device', 'N/A')}
+- Timestamp: {kwargs.get('timestamp', datetime.now().isoformat())}
 """
     return template
 
@@ -4622,7 +4697,7 @@ def main():
         print(f"\n{'='*70}")
         print(f"  ✅ TILE-FIRST PIPELINE COMPLETE")
         print(f"{'='*70}")
-        print(f"  ⏱️  Runtime: {time.time() - START_TIME:.1f}s")
+        print(f"  ⏱️  Runtime: {time.time() - start_time:.1f}s")
         print(f"{'='*70}")
         
         return  # ← CRITICAL: Exit here, skip panel pipeline

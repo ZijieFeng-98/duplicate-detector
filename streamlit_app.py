@@ -166,9 +166,9 @@ def cleanup_old_files():
     except Exception:
         pass
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)  # 5-minute TTL for quick re-runs
 def load_report(tsv_path: Path):
-    """Load TSV report with caching"""
+    """Load TSV report with caching and auto-refresh"""
     return pd.read_csv(BytesIO(tsv_path.read_bytes()), sep="\t", low_memory=False)
 
 def parse_results(output_dir: Path) -> dict:
@@ -908,22 +908,77 @@ elif page == "📊 Results":
     
     with col2:
         if comp_dir.exists():
-            # Create zip
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                for file_path in output_dir.rglob('*'):
-                    if file_path.is_file():
-                        zip_file.write(file_path, file_path.relative_to(output_dir))
+            # Create zip (memory-safe with temp file)
+            import tempfile
+            import os
             
-            st.download_button(
-                "📦 Download All (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
+            with tempfile.NamedTemporaryFile(mode='w+b', suffix='.zip', delete=False) as tmp:
+                tmp_path = tmp.name
+            
+            try:
+                with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    # TSV report
+                    if tsv_path.exists():
+                        zf.write(tsv_path, tsv_path.name)
+                    
+                    # Metadata
+                    meta_json = output_dir / 'RUN_METADATA.json'
+                    if meta_json.exists():
+                        zf.write(meta_json, meta_json.name)
+                    
+                    # Visual comparisons (limit to first 50 to avoid huge archives)
+                    pair_count = 0
+                    for pair_dir in sorted(comp_dir.glob("pair_*_detailed")):
+                        if pair_count >= 50:  # Cap at 50 pairs
+                            break
+                        for file in pair_dir.glob("*"):
+                            if file.is_file():
+                                zf.write(file, f"{pair_dir.name}/{file.name}")
+                        pair_count += 1
+                
+                # Read temp file for download
+                with open(tmp_path, 'rb') as f:
+                    zip_bytes = f.read()
+                
+                st.download_button(
+                    "📦 Download All (ZIP)",
+                    data=zip_bytes,
+                    file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    help="Includes TSV report, metadata, and first 50 pairs (memory-safe)"
+                )
+            finally:
+                # Cleanup
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
     
     st.markdown("---")
+    
+    # Inline HTML Preview
+    with st.expander("📊 Interactive Comparison Preview", expanded=False):
+        st.info("Preview the first Tier-A pair's interactive comparison")
+        
+        # Find first Tier-A detailed folder
+        if comp_dir.exists():
+            tier_a_dirs = sorted([d for d in comp_dir.glob("pair_*_detailed") 
+                                 if (d / "interactive.html").exists()])
+            
+            if tier_a_dirs:
+                first_pair = tier_a_dirs[0]
+                html_path = first_pair / "interactive.html"
+                
+                if html_path.exists():
+                    html_content = html_path.read_text(encoding='utf-8')
+                    
+                    # Embed with iframe
+                    st.components.v1.html(html_content, height=800, scrolling=True)
+                else:
+                    st.warning("Interactive HTML not found")
+            else:
+                st.info("No Tier-A pairs to preview")
+        else:
+            st.warning("No comparison directory found")
     
     # Native Streamlit visualization display
     st.subheader("🌐 Interactive Results Viewer")
@@ -957,7 +1012,7 @@ elif page == "📊 Results":
                         clip_val = row.get('Cosine_Similarity', 'N/A')
                         if pd.notna(clip_val) and clip_val != '':
                             st.metric("🎯 CLIP", f"{float(clip_val):.3f}")
-    else:
+                        else:
                             st.metric("🎯 CLIP", "N/A")
                     with col2:
                         ssim_val = row.get('SSIM', 'N/A')
