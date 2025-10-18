@@ -1,0 +1,273 @@
+{
+  "metrics": {
+    "overall": {
+      "true_positives": 3,
+      "false_positives": 0,
+      "false_negatives": 9,
+      "true_negatives": 10,
+      "precision": 1.0,
+      "recall": 0.25,
+      "f1_score": 0.4,
+      "false_positive_rate": 0.0,
+      "accuracy": 0.5909090909090909
+    },
+    "by_category": {
+      "hard_negative": {
+        "count": 10,
+        "detected": 0,
+        "recall": 0.0
+      },
+      "transformed_duplicate": {
+        "count": 12,
+        "detected": 3,
+        "recall": 0.25
+      }
+    },
+    "total_pairs": 22
+  },
+  "results": [
+    {
+      "pair_id": 0,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.20228043234026183,
+      "phash_distance": 28,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 1,
+      "category": "transformed_duplicate",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.21760333517550204,
+      "phash_distance": 34,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 2,
+      "category": "transformed_duplicate",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "was_detected": true,
+      "clip_score": null,
+      "ssim_score": 0.9837810979225328,
+      "phash_distance": 0,
+      "method_triggered": "phash"
+    },
+    {
+      "pair_id": 3,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1916036668501343,
+      "phash_distance": 32,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 4,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1860665071263037,
+      "phash_distance": 36,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 5,
+      "category": "transformed_duplicate",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.21786583006951935,
+      "phash_distance": 32,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 6,
+      "category": "transformed_duplicate",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "was_detected": true,
+      "clip_score": null,
+      "ssim_score": 0.9837510327575407,
+      "phash_distance": 0,
+      "method_triggered": "phash"
+    },
+    {
+      "pair_id": 7,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1840433598525781,
+      "phash_distance": 32,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 8,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1831362833629966,
+      "phash_distance": 36,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 9,
+      "category": "transformed_duplicate",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.2199318681533197,
+      "phash_distance": 30,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 10,
+      "category": "transformed_duplicate",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "was_detected": true,
+      "clip_score": null,
+      "ssim_score": 0.9837734368009112,
+      "phash_distance": 0,
+      "method_triggered": "phash"
+    },
+    {
+      "pair_id": 11,
+      "category": "transformed_duplicate",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1863365074484205,
+      "phash_distance": 30,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 12,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18401840874056627,
+      "phash_distance": 34,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 13,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18306150762006268,
+      "phash_distance": 34,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 14,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18246389679220387,
+      "phash_distance": 26,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 15,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18145710398553788,
+      "phash_distance": 24,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 16,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18813750198077497,
+      "phash_distance": 30,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 17,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18119434335279003,
+      "phash_distance": 26,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 18,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18656780805718776,
+      "phash_distance": 26,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 19,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1855605406012431,
+      "phash_distance": 28,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 20,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.18433117222240736,
+      "phash_distance": 24,
+      "method_triggered": "none"
+    },
+    {
+      "pair_id": 21,
+      "category": "hard_negative",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "was_detected": false,
+      "clip_score": null,
+      "ssim_score": 0.1847964543490239,
+      "phash_distance": 34,
+      "method_triggered": "none"
+    }
+  ],
+  "timestamp": "2025-10-18T15:55:57.215514"
+}

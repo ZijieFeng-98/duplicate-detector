@@ -33,3 +33,5 @@ duplicate_detector/
 cache/
 
 
+validation_real_test/
+validation_synthetic_test/

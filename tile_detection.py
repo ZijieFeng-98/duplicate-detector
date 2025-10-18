@@ -223,7 +223,14 @@ def _zscore(img: np.ndarray) -> np.ndarray:
     return (img - mu) / sd
 
 def _ncc_same_size(a: np.ndarray, b: np.ndarray) -> float:
-    """Normalized cross-correlation"""
+    """Normalized cross-correlation - resizes to common size if needed"""
+    # Ensure same size
+    if a.shape != b.shape:
+        h = min(a.shape[0], b.shape[0])
+        w = min(a.shape[1], b.shape[1])
+        a = cv2.resize(a, (w, h))
+        b = cv2.resize(b, (w, h))
+    
     a_z = _zscore(a)
     b_z = _zscore(b)
     return float(np.mean(a_z * b_z))

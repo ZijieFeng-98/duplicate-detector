@@ -4592,8 +4592,8 @@ def main():
         tfc.TILE_CLIP_MIN = SIM_THRESHOLD
         
         # Load CLIP model
-        from open_clip_wrapper import load_clip
-        clip_model, preprocess = load_clip(device=DEVICE)
+        from open_clip_wrapper import load_clip as load_clip_wrapper
+        clip_model, preprocess = load_clip_wrapper(device=DEVICE)
         
         # Run tile-first pipeline
         df_merged = run_tile_first_pipeline(

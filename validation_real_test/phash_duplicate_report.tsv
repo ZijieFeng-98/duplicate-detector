@@ -1,0 +1,3 @@
+Image_A	Image_B	Path_A	Path_B	Hamming_Distance	Transform_Matched
+page_6_panel03.png	page_6_panel04.png	validation_real_test/panels/page_6/page_6_panel03.png	validation_real_test/panels/page_6/page_6_panel04.png	4	rot_0 vs rot_0
+page_6_panel04.png	page_6_panel06.png	validation_real_test/panels/page_6/page_6_panel04.png	validation_real_test/panels/page_6/page_6_panel06.png	4	rot_180 vs rot_180

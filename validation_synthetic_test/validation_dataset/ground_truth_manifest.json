@@ -1,0 +1,206 @@
+{
+  "created": "2025-10-18T15:55:56.328676",
+  "total_pairs": 22,
+  "true_positives": 12,
+  "hard_negatives": 10,
+  "pairs": [
+    {
+      "pair_id": 0,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_000_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_000_rotate_90.png",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "transform_type": "rotate_90"
+    },
+    {
+      "pair_id": 1,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_001_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_001_mirror_h.png",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "transform_type": "mirror_h"
+    },
+    {
+      "pair_id": 2,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_002_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_002_brightness_+20.png",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "transform_type": "brightness_+20"
+    },
+    {
+      "pair_id": 3,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_003_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_003_rotate_180.png",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "transform_type": "rotate_180"
+    },
+    {
+      "pair_id": 4,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_004_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_004_rotate_90.png",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "transform_type": "rotate_90"
+    },
+    {
+      "pair_id": 5,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_005_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_005_mirror_h.png",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "transform_type": "mirror_h"
+    },
+    {
+      "pair_id": 6,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_006_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_006_brightness_+20.png",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "transform_type": "brightness_+20"
+    },
+    {
+      "pair_id": 7,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_007_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_007_rotate_180.png",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "transform_type": "rotate_180"
+    },
+    {
+      "pair_id": 8,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_008_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_008_rotate_90.png",
+      "label": "transform_rotate_90",
+      "should_detect": true,
+      "transform_type": "rotate_90"
+    },
+    {
+      "pair_id": 9,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_009_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_009_mirror_h.png",
+      "label": "transform_mirror_h",
+      "should_detect": true,
+      "transform_type": "mirror_h"
+    },
+    {
+      "pair_id": 10,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_010_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_010_brightness_+20.png",
+      "label": "transform_brightness_+20",
+      "should_detect": true,
+      "transform_type": "brightness_+20"
+    },
+    {
+      "pair_id": 11,
+      "category": "transformed_duplicate",
+      "path_a": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_011_orig.png",
+      "path_b": "validation_synthetic_test/validation_dataset/transformed_duplicates/pair_011_rotate_180.png",
+      "label": "transform_rotate_180",
+      "should_detect": true,
+      "transform_type": "rotate_180"
+    },
+    {
+      "pair_id": 12,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_012_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_012_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 13,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_013_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_013_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 14,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_014_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_014_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 15,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_015_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_015_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 16,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_016_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_016_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 17,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_017_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_017_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 18,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_018_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_018_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 19,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_019_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_019_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 20,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_020_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_020_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    },
+    {
+      "pair_id": 21,
+      "category": "hard_negative",
+      "path_a": "validation_synthetic_test/validation_dataset/hard_negatives/pair_021_a.png",
+      "path_b": "validation_synthetic_test/validation_dataset/hard_negatives/pair_021_b.png",
+      "label": "different_synthetic",
+      "should_detect": false,
+      "modality": "synthetic"
+    }
+  ]
+}
