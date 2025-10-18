@@ -15,7 +15,7 @@ rm -rf "$OUTPUT_DIR" 2>/dev/null
 
 # Run with permissive settings (should find something)
 echo "🚀 Running detection pipeline..."
-python ai_pdf_panel_duplicate_check_AUTO.py \
+python3 ai_pdf_panel_duplicate_check_AUTO.py \
   --pdf "$PDF_PATH" \
   --output "$OUTPUT_DIR" \
   --sim-threshold 0.96 \
