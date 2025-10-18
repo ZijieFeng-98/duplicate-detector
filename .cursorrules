@@ -1,0 +1,139 @@
+# Cursor AI Rules for Duplicate Detection Pipeline
+# Place this file in your project root as .cursorrules
+
+project_name: "Scientific Figure Duplicate Detection"
+language: "Python 3.12+"
+framework: "PyTorch, OpenCV, scikit-image, Streamlit"
+
+# Testing workflow
+testing:
+  command: "python test_pipeline_auto.py"
+  quick_test: "./quick_test.sh"
+  watch_files: 
+    - "ai_pdf_panel_duplicate_check_AUTO.py"
+    - "tile_detection.py"
+    - "tile_first_pipeline.py"
+    - "streamlit_app.py"
+  
+  before_commit:
+    - "Run automated tests"
+    - "Verify no hardcoded paths"
+    - "Check for debug prints"
+    - "Run linter"
+
+# Code quality rules
+code_style:
+  - "Use type hints for function signatures"
+  - "Add docstrings to all functions"
+  - "Keep functions under 50 lines"
+  - "Use pathlib.Path for file operations"
+  - "Handle exceptions explicitly (no bare except)"
+  - "Use f-strings for string formatting"
+  - "Add error handling to all file I/O"
+
+# Common patterns
+patterns:
+  image_loading: |
+    # Always use PIL for consistency
+    from PIL import Image
+    img = Image.open(path).convert('RGB')
+    np_img = np.array(img)
+  
+  error_handling: |
+    try:
+        # risky operation
+    except SpecificError as e:
+        logger.warning(f"Failed: {e}")
+        return default_value
+  
+  dataframe_ops: |
+    # Use safe column access
+    val = pd.to_numeric(df.get('Column', 0), errors='coerce').fillna(0)
+  
+  ssim_computation: |
+    # Always specify data_range for SSIM
+    from skimage.metrics import structural_similarity as ssim
+    score = ssim(img1, img2, channel_axis=2, data_range=255)
+
+# When I ask for help debugging:
+debug_workflow:
+  1: "Check test_output/ for intermediate files"
+  2: "Look at RUN_METADATA.json for stage counts"
+  3: "Compare panel_manifest.tsv with actual panels/"
+  4: "Validate image sizes and formats"
+  5: "Check for NaN values in final TSV"
+  6: "Review Streamlit Cloud logs in 'Manage app'"
+  7: "Check requirements.txt for missing dependencies"
+
+# When I ask to add a feature:
+feature_workflow:
+  1: "Add test case in test_pipeline_auto.py first"
+  2: "Implement feature with error handling"
+  3: "Update docstrings and type hints"
+  4: "Run full test suite"
+  5: "Update RUN_METADATA to track new metrics"
+  6: "Update Streamlit UI if user-facing"
+  7: "Update documentation"
+
+# Common fixes
+troubleshooting:
+  empty_tsv: |
+    - Check MIN_PANEL_AREA threshold (default 80000 might be too high)
+    - Lower SIM_THRESHOLD temporarily (try 0.85)
+    - Verify PDF has non-caption pages
+    - Check panel_manifest.tsv for detections
+    - Look for import errors in logs
+  
+  slow_performance: |
+    - Enable caching (--enable-cache)
+    - Reduce batch size if memory issues
+    - Use --no-orb flag to skip ORB-RANSAC
+    - Consider tile-first mode for large datasets
+  
+  false_positives: |
+    - Enable confocal FP filter
+    - Use CLIP Z-score discrimination
+    - Enable patch-wise SSIM
+    - Raise SIM_THRESHOLD to 0.96+
+    - Enable tier gating
+  
+  deployment_errors: |
+    - Check .python-version (should be 3.12)
+    - Verify all imports in requirements.txt
+    - Check Streamlit Cloud logs for build errors
+    - Ensure no hardcoded absolute paths
+    - Test locally with streamlit run first
+
+# Deployment checklist
+deployment:
+  - "Update requirements.txt with all dependencies"
+  - "Set Python version in .python-version"
+  - "Remove hardcoded paths"
+  - "Test with 'streamlit run streamlit_app.py'"
+  - "Commit all changes"
+  - "Push to GitHub"
+  - "Check Streamlit Cloud deployment status"
+  - "Test on deployed app"
+
+# Key metrics to track
+metrics:
+  quality:
+    - "Precision (TP / (TP + FP))"
+    - "Recall (TP / (TP + FN))"
+    - "F1 Score"
+    - "False Positive Rate"
+  
+  performance:
+    - "Runtime (seconds)"
+    - "Memory usage (MB)"
+    - "Cache hit rate"
+    - "Panels processed per second"
+
+# Documentation standards
+documentation:
+  - "Update README.md for major features"
+  - "Add inline comments for complex logic"
+  - "Document CLI flags in --help"
+  - "Keep DEPLOYMENT_STATUS.md current"
+  - "Update method descriptions for publications"
+
