@@ -1,0 +1,845 @@
+#!/usr/bin/env python3
+"""
+Final Production-Grade Module - All Expert Fixes Applied
+
+SSIM fixes:
+- Shared data_range across both images
+- Proper dtype handling
+- Edge coverage in patch sampling
+- Top-K patch stat
+
+FAISS improvements:
+- nlist = 4√N (proper scaling)
+- nprobe tuning for recall
+- HNSW efSearch exposure
+- Zero-norm guards in numpy fallback
+
+ORB improvements:
+- More matches to RANSAC (not just reciprocal)
+- Standard 0.75 ratio test
+"""
+
+import numpy as np
+import cv2
+from typing import List, Tuple, Optional, Dict
+from pathlib import Path
+import warnings
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 1: PRODUCTION-GRADE SSIM
+# ═══════════════════════════════════════════════════════════════
+
+class ProductionSSIM:
+    """
+    Production-grade SSIM with all correctness fixes
+    
+    CRITICAL FIXES:
+    1. Shared data_range across both images (not per-image)
+    2. Proper dtype unification
+    3. Edge coverage in patch sampling
+    4. Top-K patch statistics
+    
+    Reference: scikit-image documentation on data_range
+    """
+    
+    @staticmethod
+    def compute_ssim(img_a: np.ndarray,
+                     img_b: np.ndarray,
+                     use_multiscale: bool = False) -> float:
+        """
+        Compute SSIM with proper data_range handling
+        
+        Key fix: Use SHARED data_range across both images
+        """
+        from skimage.metrics import structural_similarity as ssim_func
+        
+        # Convert to grayscale
+        if img_a.ndim == 3:
+            img_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
+        if img_b.ndim == 3:
+            img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
+        
+        # Ensure same size
+        if img_a.shape != img_b.shape:
+            h_min = min(img_a.shape[0], img_b.shape[0])
+            w_min = min(img_a.shape[1], img_b.shape[1])
+            img_a = img_a[:h_min, :w_min]
+            img_b = img_b[:h_min, :w_min]
+        
+        # CRITICAL FIX: Compute SHARED data_range
+        data_range = ProductionSSIM._compute_shared_data_range(img_a, img_b)
+        
+        # If needed, unify dtypes (done in _compute_shared_data_range)
+        img_a, img_b = ProductionSSIM._unify_dtypes(img_a, img_b)
+        
+        # Compute SSIM with explicit data_range
+        if use_multiscale:
+            return ProductionSSIM._compute_ms_ssim(img_a, img_b, data_range)
+        else:
+            ssim_score = ssim_func(
+                img_a, img_b,
+                data_range=data_range,
+                gaussian_weights=True,
+                sigma=1.5,
+                use_sample_covariance=False,
+                channel_axis=None  # scikit-image ≥0.19
+            )
+            return float(ssim_score)
+    
+    @staticmethod
+    def _compute_shared_data_range(img_a: np.ndarray, img_b: np.ndarray) -> float:
+        """
+        Compute shared data_range across both images
+        
+        Critical: Use same scale for both to ensure comparability
+        """
+        
+        # Case 1: Both uint8
+        if img_a.dtype == np.uint8 and img_b.dtype == np.uint8:
+            return 255.0
+        
+        # Case 2: At least one is float
+        if img_a.dtype in (np.float32, np.float64) or img_b.dtype in (np.float32, np.float64):
+            a_min, a_max = float(img_a.min()), float(img_a.max())
+            b_min, b_max = float(img_b.min()), float(img_b.max())
+            
+            # Shared range across both images
+            data_range = max(a_max, b_max) - min(a_min, b_min)
+            
+            if data_range <= 0:  # Degenerate case
+                data_range = 1.0
+            
+            # If both already in [0,1], pin to 1.0 (more stable numerically)
+            if a_min >= 0 and b_min >= 0 and a_max <= 1 and b_max <= 1:
+                data_range = 1.0
+            
+            return data_range
+        
+        # Case 3: Other dtypes - will unify to uint8
+        return 255.0
+    
+    @staticmethod
+    def _unify_dtypes(img_a: np.ndarray, img_b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Unify dtypes to uint8 with shared scale if needed
+        """
+        
+        # If both already uint8, done
+        if img_a.dtype == np.uint8 and img_b.dtype == np.uint8:
+            return img_a, img_b
+        
+        # If mixed dtypes, unify to uint8 with shared scale
+        if img_a.dtype != img_b.dtype or (img_a.dtype not in (np.uint8, np.float32, np.float64)):
+            stacked = np.stack([img_a.astype(np.float32), img_b.astype(np.float32)])
+            s_min, s_max = float(stacked.min()), float(stacked.max())
+            denom = max(1e-6, s_max - s_min)
+            
+            img_a = ((img_a - s_min) / denom * 255.0).astype(np.uint8)
+            img_b = ((img_b - s_min) / denom * 255.0).astype(np.uint8)
+        
+        return img_a, img_b
+    
+    @staticmethod
+    def _compute_ms_ssim(img_a: np.ndarray, img_b: np.ndarray, data_range: float) -> float:
+        """Multi-scale SSIM with proper data_range"""
+        from skimage.metrics import structural_similarity as ssim_func
+        
+        # Wang et al. 2003 standard weights
+        weights = np.array([0.0448, 0.2856, 0.3001, 0.2363, 0.1333])
+        n_scales = len(weights)
+        
+        h, w = img_a.shape
+        min_size = 2 ** (n_scales - 1) * 11
+        
+        if min(h, w) < min_size:
+            n_scales = max(1, int(np.log2(min(h, w) / 11)) + 1)
+            weights = weights[:n_scales]
+            weights = weights / weights.sum()
+        
+        ms_ssim_components = []
+        
+        for scale_idx in range(n_scales):
+            try:
+                ssim_val = ssim_func(
+                    img_a, img_b,
+                    data_range=data_range,
+                    gaussian_weights=True,
+                    sigma=1.5,
+                    use_sample_covariance=False,
+                    channel_axis=None
+                )
+                ms_ssim_components.append(ssim_val)
+            except Exception:
+                if ms_ssim_components:
+                    ms_ssim_components.append(ms_ssim_components[-1])
+                else:
+                    ms_ssim_components.append(0.0)
+            
+            if scale_idx < n_scales - 1:
+                img_a = cv2.pyrDown(img_a)
+                img_b = cv2.pyrDown(img_b)
+        
+        ms_ssim = np.prod([c ** w for c, w in zip(ms_ssim_components, weights)])
+        return float(ms_ssim)
+    
+    @staticmethod
+    def compute_patch_ssim(img_a: np.ndarray,
+                          img_b: np.ndarray,
+                          patch_size: int = 128,
+                          stride: int = 64,
+                          use_multiscale: bool = True) -> Dict:
+        """
+        Compute per-patch SSIM with edge coverage
+        
+        FIXES:
+        - Include right/bottom edges (don't skip trailing regions)
+        - Add Top-K patch mean (mirrors Patch_SSIM_TopK feature)
+        """
+        
+        h, w = img_a.shape[:2]
+        
+        # Generate grid with edge coverage
+        def _grid(size, patch, stride):
+            """Generate indices with edge coverage"""
+            xs = list(range(0, max(1, size - patch + 1), stride))
+            # Add last step if we're missing the edge
+            if xs and xs[-1] != size - patch and size >= patch:
+                xs.append(max(0, size - patch))
+            return xs
+        
+        ys = _grid(h, patch_size, stride)
+        xs = _grid(w, patch_size, stride)
+        
+        patch_scores = []
+        
+        for y in ys:
+            for x in xs:
+                patch_a = img_a[y:y+patch_size, x:x+patch_size]
+                patch_b = img_b[y:y+patch_size, x:x+patch_size]
+                
+                if patch_a.shape[0] >= 32 and patch_a.shape[1] >= 32:
+                    score = ProductionSSIM.compute_ssim(patch_a, patch_b, use_multiscale)
+                    patch_scores.append(score)
+        
+        if not patch_scores:
+            # Fallback: compute on whole image
+            whole_score = ProductionSSIM.compute_ssim(img_a, img_b, use_multiscale)
+            return {
+                'min': whole_score,
+                'max': whole_score,
+                'mean': whole_score,
+                'median': whole_score,
+                'topk_mean': whole_score,
+                'std': 0.0,
+                'n_patches': 1
+            }
+        
+        # Compute Top-K mean (mirrors Patch_SSIM_TopK)
+        k = min(4, len(patch_scores))
+        topk_mean = float(np.mean(sorted(patch_scores, reverse=True)[:k]))
+        
+        return {
+            'min': float(np.min(patch_scores)),
+            'max': float(np.max(patch_scores)),
+            'mean': float(np.mean(patch_scores)),
+            'median': float(np.median(patch_scores)),
+            'topk_mean': topk_mean,  # NEW: Top-4 mean
+            'std': float(np.std(patch_scores)),
+            'n_patches': len(patch_scores)
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 2: PRODUCTION-GRADE FAISS
+# ═══════════════════════════════════════════════════════════════
+
+class ProductionFAISS:
+    """
+    Production-grade FAISS with proper parameters
+    
+    KEY IMPROVEMENTS:
+    1. nlist = 4√N (proper scaling, not N//39)
+    2. nprobe tuning (4-32 based on nlist)
+    3. HNSW efSearch exposure
+    4. Zero-norm guards in numpy fallback
+    5. Faster top-K with argpartition
+    
+    Reference: FAISS wiki guidelines
+    """
+    
+    def __init__(self,
+                 embedding_dim: int = 512,
+                 index_type: str = 'IVF',
+                 nlist: Optional[int] = None,
+                 nprobe: Optional[int] = None,
+                 hnsw_M: int = 32,
+                 hnsw_efSearch: int = 64):
+        """
+        Args:
+            embedding_dim: Dimension of embeddings (512 for ViT-B/32)
+            index_type: 'IVF', 'HNSW', or 'Flat'
+            nlist: Number of IVF clusters (auto: 4√N if None)
+            nprobe: IVF search probes (auto: √nlist if None)
+            hnsw_M: HNSW graph connectivity
+            hnsw_efSearch: HNSW search depth (higher = better recall)
+        """
+        
+        self.embedding_dim = embedding_dim
+        self.index_type = index_type
+        self.nlist = nlist
+        self.nprobe = nprobe
+        self.hnsw_M = hnsw_M
+        self.hnsw_efSearch = hnsw_efSearch
+        
+        self.index = None
+        self.panel_paths = None
+        self.panel_indices = None
+        
+        try:
+            import faiss
+            self.faiss = faiss
+            self.faiss_available = True
+        except ImportError:
+            print("⚠️  FAISS not installed. Using numpy fallback.")
+            print("   Install: pip install faiss-cpu  (or faiss-gpu)")
+            self.faiss_available = False
+    
+    def build_index(self, embeddings: np.ndarray, panel_paths: List[str]):
+        """
+        Build FAISS index with proper parameters
+        
+        FIXES:
+        - nlist = 4√N (FAISS wiki recommendation)
+        - nprobe tuning for recall
+        """
+        
+        if not self.faiss_available:
+            # Store for numpy fallback
+            self.embeddings = embeddings
+            self.panel_paths = panel_paths
+            self.panel_indices = np.arange(len(panel_paths))
+            return
+        
+        print(f"\n🔍 Building FAISS index ({self.index_type})...")
+        print(f"   Embeddings: {embeddings.shape}")
+        
+        n_panels = len(embeddings)
+        
+        # Normalize embeddings for cosine similarity (IP metric)
+        embeddings = embeddings.astype('float32')
+        self.faiss.normalize_L2(embeddings)
+        
+        if self.index_type == 'Flat':
+            # Exact search baseline
+            self.index = self.faiss.IndexFlatIP(self.embedding_dim)
+        
+        elif self.index_type == 'IVF':
+            # CRITICAL FIX: nlist = 4√N (FAISS wiki guideline)
+            if self.nlist is None:
+                self.nlist = int(min(4096, max(1, 4 * np.sqrt(n_panels))))
+            
+            quantizer = self.faiss.IndexFlatIP(self.embedding_dim)
+            
+            self.index = self.faiss.IndexIVFFlat(
+                quantizer,
+                self.embedding_dim,
+                self.nlist,
+                self.faiss.METRIC_INNER_PRODUCT
+            )
+            
+            print(f"   Training IVF with nlist={self.nlist} (4√{n_panels} = {4*np.sqrt(n_panels):.1f})...")
+            self.index.train(embeddings)
+            
+            # CRITICAL FIX: Set nprobe for recall
+            if self.nprobe is None:
+                self.nprobe = min(32, max(4, int(np.sqrt(self.nlist))))
+            
+            self.index.nprobe = self.nprobe
+            print(f"   Set nprobe={self.nprobe} (√{self.nlist} = {np.sqrt(self.nlist):.1f})")
+        
+        elif self.index_type == 'HNSW':
+            # HNSW with exposed efSearch
+            self.index = self.faiss.IndexHNSWFlat(self.embedding_dim, self.hnsw_M)
+            self.index.hnsw.efConstruction = 40
+            self.index.hnsw.efSearch = self.hnsw_efSearch
+            
+            print(f"   HNSW: M={self.hnsw_M}, efSearch={self.hnsw_efSearch}")
+        
+        else:
+            raise ValueError(f"Unknown index type: {self.index_type}")
+        
+        # Add vectors
+        self.index.add(embeddings)
+        self.panel_paths = panel_paths
+        self.panel_indices = np.arange(len(panel_paths))
+        
+        print(f"   ✓ Index built: {n_panels} panels indexed")
+    
+    def search(self,
+               query_embedding: np.ndarray,
+               k: int = 200,
+               similarity_threshold: float = 0.90,
+               return_indices: bool = False) -> List[Tuple]:
+        """
+        Search for k nearest neighbors
+        
+        Args:
+            query_embedding: Query vector
+            k: Number of neighbors
+            similarity_threshold: Minimum similarity
+            return_indices: If True, return (idx, similarity) instead of (path, similarity)
+        
+        Returns:
+            List of (path, similarity) or (idx, similarity) tuples
+        """
+        
+        if not self.faiss_available:
+            return self._numpy_search(query_embedding, k, similarity_threshold, return_indices)
+        
+        # Normalize query
+        query_embedding = query_embedding.astype('float32').reshape(1, -1)
+        self.faiss.normalize_L2(query_embedding)
+        
+        # Search
+        k_search = min(k, len(self.panel_paths))
+        distances, indices = self.index.search(query_embedding, k_search)
+        
+        # Filter by threshold and format results
+        results = []
+        for idx, dist in zip(indices[0], distances[0]):
+            if dist >= similarity_threshold and idx < len(self.panel_paths):
+                if return_indices:
+                    results.append((int(idx), float(dist)))
+                else:
+                    results.append((self.panel_paths[idx], float(dist)))
+        
+        return results
+    
+    def _numpy_search(self,
+                     query_embedding: np.ndarray,
+                     k: int,
+                     similarity_threshold: float,
+                     return_indices: bool) -> List[Tuple]:
+        """
+        Numpy fallback with improvements
+        
+        FIXES:
+        - Zero-norm guards (avoid division by zero)
+        - Faster top-K with argpartition (O(N) vs O(N log N))
+        """
+        
+        # Normalize query with zero-norm guard
+        qe = query_embedding.astype(np.float32)
+        qn = np.linalg.norm(qe) + 1e-12  # Zero-norm guard
+        qe = qe / qn
+        
+        # Normalize embeddings with zero-norm guard
+        emb = self.embeddings.astype(np.float32)
+        norms = np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12  # Zero-norm guard
+        emb = emb / norms
+        
+        # Cosine similarity
+        sims = emb @ qe  # (N,)
+        
+        # Filter by threshold
+        mask = sims >= similarity_threshold
+        if not np.any(mask):
+            return []
+        
+        # CRITICAL FIX: Use argpartition for O(N) top-K
+        valid_sims = sims[mask]
+        k_actual = min(k, len(valid_sims))
+        
+        if k_actual == 0:
+            return []
+        
+        # argpartition is O(N), much faster than argsort for large N
+        idx = np.argpartition(-valid_sims, kth=min(k_actual-1, len(valid_sims)-1))[:k_actual]
+        
+        # Get candidate indices in original array
+        cand = np.where(mask)[0][idx]
+        
+        # Sort by similarity (only these k candidates)
+        order = np.argsort(-sims[cand])
+        
+        # Format results
+        results = []
+        for i in cand[order]:
+            if return_indices:
+                results.append((int(i), float(sims[i])))
+            else:
+                results.append((self.panel_paths[i], float(sims[i])))
+        
+        return results
+    
+    def batch_search(self,
+                    query_embeddings: np.ndarray,
+                    k: int = 200,
+                    similarity_threshold: float = 0.90,
+                    return_indices: bool = False) -> List[List[Tuple]]:
+        """Batch search for multiple queries"""
+        
+        if not self.faiss_available:
+            return [self._numpy_search(q, k, similarity_threshold, return_indices) 
+                    for q in query_embeddings]
+        
+        # Normalize queries
+        query_embeddings = query_embeddings.astype('float32')
+        self.faiss.normalize_L2(query_embeddings)
+        
+        # Batch search
+        k_search = min(k, len(self.panel_paths))
+        distances, indices = self.index.search(query_embeddings, k_search)
+        
+        # Process results
+        all_results = []
+        for query_distances, query_indices in zip(distances, indices):
+            results = []
+            for idx, dist in zip(query_indices, query_distances):
+                if dist >= similarity_threshold and idx < len(self.panel_paths):
+                    if return_indices:
+                        results.append((int(idx), float(dist)))
+                    else:
+                        results.append((self.panel_paths[idx], float(dist)))
+            all_results.append(results)
+        
+        return all_results
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 3: PRODUCTION-GRADE ORB
+# ═══════════════════════════════════════════════════════════════
+
+class ProductionORB:
+    """
+    Production-grade ORB verifier
+    
+    FIXES:
+    - Feed ALL ratio-passed matches to RANSAC (not just reciprocal)
+    - RANSAC filters out bad matches anyway
+    - Often salvages more geometry
+    
+    Reference: OpenCV feature matching tutorial
+    """
+    
+    def __init__(self,
+                 ratio_threshold: float = 0.75,
+                 ransac_reproj_threshold: float = 4.0,
+                 min_inliers: int = 30,
+                 min_inlier_ratio: float = 0.30):
+        
+        self.ratio_threshold = ratio_threshold
+        self.ransac_reproj_threshold = ransac_reproj_threshold
+        self.min_inliers = min_inliers
+        self.min_inlier_ratio = min_inlier_ratio
+    
+    def verify_pair(self, img_a: np.ndarray, img_b: np.ndarray) -> Dict:
+        """
+        Verify geometric duplicate
+        
+        CRITICAL FIX: Use all ratio-passed matches for RANSAC
+        (not just reciprocal matches)
+        """
+        
+        # Extract ORB features
+        orb = cv2.ORB_create(nfeatures=1000)
+        kp_a, desc_a = orb.detectAndCompute(img_a, None)
+        kp_b, desc_b = orb.detectAndCompute(img_b, None)
+        
+        if desc_a is None or desc_b is None or len(kp_a) < 10 or len(kp_b) < 10:
+            return {
+                'verified': False,
+                'reason': 'insufficient_features',
+                'inliers': 0
+            }
+        
+        # BFMatcher
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        matches = bf.knnMatch(desc_a, desc_b, k=2)
+        
+        # Lowe's ratio test (0.75 standard)
+        good_matches = []
+        for match_pair in matches:
+            if len(match_pair) == 2:
+                m, n = match_pair
+                if m.distance < self.ratio_threshold * n.distance:
+                    good_matches.append(m)
+        
+        if len(good_matches) < 10:
+            return {
+                'verified': False,
+                'reason': 'insufficient_matches',
+                'matches': len(good_matches),
+                'inliers': 0
+            }
+        
+        # CRITICAL FIX: Use ALL ratio-passed matches for RANSAC
+        # RANSAC will filter out bad ones anyway
+        cands = good_matches  # Not just reciprocal matches
+        
+        # Extract coordinates
+        pts_a = np.float32([kp_a[m.queryIdx].pt for m in cands]).reshape(-1, 1, 2)
+        pts_b = np.float32([kp_b[m.trainIdx].pt for m in cands]).reshape(-1, 1, 2)
+        
+        # RANSAC homography
+        H, mask = cv2.findHomography(
+            pts_a, pts_b,
+            cv2.RANSAC,
+            ransacReprojThreshold=self.ransac_reproj_threshold
+        )
+        
+        if H is None or mask is None:
+            return {
+                'verified': False,
+                'reason': 'ransac_failed',
+                'inliers': 0
+            }
+        
+        # Compute metrics
+        inliers = np.sum(mask)
+        inlier_ratio = inliers / len(cands)
+        
+        inlier_pts_a = pts_a[mask.ravel() == 1]
+        inlier_pts_b = pts_b[mask.ravel() == 1]
+        
+        if len(inlier_pts_a) >= 4:
+            inlier_pts_a_h = np.hstack([
+                inlier_pts_a.reshape(-1, 2),
+                np.ones((len(inlier_pts_a), 1))
+            ])
+            projected = (H @ inlier_pts_a_h.T).T
+            projected = projected[:, :2] / projected[:, 2:3]
+            
+            errors = np.linalg.norm(projected - inlier_pts_b.reshape(-1, 2), axis=1)
+            median_error = np.median(errors)
+        else:
+            median_error = float('inf')
+        
+        # Verification decision
+        verified = (
+            inliers >= self.min_inliers and
+            inlier_ratio >= self.min_inlier_ratio and
+            median_error <= self.ransac_reproj_threshold
+        )
+        
+        return {
+            'verified': verified,
+            'inliers': int(inliers),
+            'inlier_ratio': float(inlier_ratio),
+            'reproj_error': float(median_error),
+            'total_matches': len(cands),
+            'homography': H.tolist() if H is not None else None
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 4: INTEGRATION HELPERS
+# ═══════════════════════════════════════════════════════════════
+
+def integrate_faiss_with_metadata(panel_paths: List[str],
+                                  clip_embeddings: np.ndarray,
+                                  page_metadata: Dict[str, int],
+                                  clip_threshold: float = 0.96,
+                                  k_candidates: int = 200,
+                                  skip_same_page: bool = True) -> List[Tuple[str, str, float]]:
+    """
+    FAISS-backed candidate generation with metadata filtering
+    
+    NEW: Skip same-page pairs early to reduce downstream cost
+    """
+    
+    print("\n🚀 FAISS-ACCELERATED CANDIDATE GENERATION")
+    print("="*70)
+    
+    # Build index
+    faiss_search = ProductionFAISS(
+        embedding_dim=clip_embeddings.shape[1],
+        index_type='IVF'
+    )
+    faiss_search.build_index(clip_embeddings, panel_paths)
+    
+    # Batch search (returns indices for faster filtering)
+    print(f"\n🔍 Searching (threshold ≥ {clip_threshold})...")
+    all_neighbors = faiss_search.batch_search(
+        clip_embeddings,
+        k=k_candidates,
+        similarity_threshold=clip_threshold,
+        return_indices=True  # Get indices for metadata filtering
+    )
+    
+    # Generate candidate pairs with metadata filtering
+    candidate_pairs = []
+    seen_pairs = set()
+    
+    for query_idx, neighbors in enumerate(all_neighbors):
+        query_path = panel_paths[query_idx]
+        query_page = page_metadata.get(query_path, -1)
+        
+        for neighbor_idx, similarity in neighbors:
+            neighbor_path = panel_paths[neighbor_idx]
+            
+            # Skip self-matches
+            if neighbor_idx == query_idx:
+                continue
+            
+            # Skip same-page pairs if requested
+            if skip_same_page:
+                neighbor_page = page_metadata.get(neighbor_path, -1)
+                if query_page == neighbor_page and query_page != -1:
+                    continue
+            
+            # Create canonical pair
+            pair = tuple(sorted([query_path, neighbor_path]))
+            
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                candidate_pairs.append((pair[0], pair[1], similarity))
+    
+    n_all_pairs = len(panel_paths) * (len(panel_paths) - 1) // 2
+    print(f"   ✓ Found {len(candidate_pairs)} candidate pairs")
+    print(f"   Reduction: {n_all_pairs} → {len(candidate_pairs)}")
+    print(f"   Speedup: {n_all_pairs / max(1, len(candidate_pairs)):.1f}x")
+    
+    return candidate_pairs
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 5: USAGE EXAMPLES
+# ═══════════════════════════════════════════════════════════════
+
+def example_usage():
+    """Complete usage examples"""
+    
+    example = '''
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 1: PRODUCTION SSIM
+# ═══════════════════════════════════════════════════════════════
+
+from final_production_module import ProductionSSIM
+import cv2
+
+img_a = cv2.imread('panel_a.png')
+img_b = cv2.imread('panel_b.png')
+
+# Single-scale SSIM with proper data_range
+ssim_score = ProductionSSIM.compute_ssim(img_a, img_b, use_multiscale=False)
+print(f"SSIM: {ssim_score:.4f}")
+
+# Multi-scale SSIM
+ms_ssim = ProductionSSIM.compute_ssim(img_a, img_b, use_multiscale=True)
+print(f"MS-SSIM: {ms_ssim:.4f}")
+
+# Patch-based SSIM with Top-K
+patch_results = ProductionSSIM.compute_patch_ssim(
+    img_a, img_b,
+    patch_size=128,
+    stride=64,
+    use_multiscale=True
+)
+
+print(f"Min patch: {patch_results['min']:.4f}")
+print(f"Mean patch: {patch_results['mean']:.4f}")
+print(f"Top-4 mean: {patch_results['topk_mean']:.4f}")  # NEW!
+
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 2: PRODUCTION FAISS
+# ═══════════════════════════════════════════════════════════════
+
+from final_production_module import ProductionFAISS
+import numpy as np
+
+# Build index
+panel_paths = ['panel_001.png', 'panel_002.png', ...]
+embeddings = np.random.randn(100, 512).astype('float32')
+
+faiss = ProductionFAISS(
+    embedding_dim=512,
+    index_type='IVF',  # Auto-tuned nlist and nprobe
+    # nlist and nprobe are auto-computed: nlist=4√N, nprobe=√nlist
+)
+
+faiss.build_index(embeddings, panel_paths)
+
+# Search
+query = embeddings[0]
+neighbors = faiss.search(
+    query,
+    k=200,
+    similarity_threshold=0.96,
+    return_indices=False  # Return paths
+)
+
+for path, sim in neighbors[:5]:
+    print(f"{path}: {sim:.4f}")
+
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 3: PRODUCTION ORB
+# ═══════════════════════════════════════════════════════════════
+
+from final_production_module import ProductionORB
+
+orb = ProductionORB(
+    ratio_threshold=0.75,  # Standard Lowe ratio
+    ransac_reproj_threshold=4.0
+)
+
+result = orb.verify_pair(img_a, img_b)
+
+if result['verified']:
+    print(f"✅ Verified!")
+    print(f"   Inliers: {result['inliers']}")
+    print(f"   Ratio: {result['inlier_ratio']:.4f}")
+else:
+    print(f"❌ Not verified: {result['reason']}")
+
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 4: COMPLETE PIPELINE WITH METADATA
+# ═══════════════════════════════════════════════════════════════
+
+from final_production_module import integrate_faiss_with_metadata
+
+page_metadata = {
+    'panel_001.png': 1,
+    'panel_002.png': 1,
+    'panel_003.png': 2,
+    ...
+}
+
+candidates = integrate_faiss_with_metadata(
+    panel_paths,
+    embeddings,
+    page_metadata,
+    clip_threshold=0.96,
+    k_candidates=200,
+    skip_same_page=True  # Skip same-page pairs
+)
+
+print(f"Generated {len(candidates)} candidates")
+
+# Then verify with SSIM + ORB
+for path_a, path_b, clip_sim in candidates:
+    img_a = cv2.imread(path_a)
+    img_b = cv2.imread(path_b)
+    
+    ssim = ProductionSSIM.compute_ssim(img_a, img_b)
+    
+    if ssim >= 0.92:
+        orb_result = orb.verify_pair(img_a, img_b)
+        if orb_result['verified']:
+            print(f"Duplicate found: {path_a} ↔ {path_b}")
+'''
+    
+    return example
+
+
+if __name__ == '__main__':
+    print("="*70)
+    print("🚀 FINAL PRODUCTION MODULE")
+    print("="*70)
+    print("\nAll expert fixes applied:")
+    print("  ✅ SSIM: Shared data_range, edge coverage, Top-K patches")
+    print("  ✅ FAISS: 4√N clusters, nprobe tuning, zero-norm guards")
+    print("  ✅ ORB: All ratio-passed matches to RANSAC")
+    print("\nUsage examples:")
+    print(example_usage())

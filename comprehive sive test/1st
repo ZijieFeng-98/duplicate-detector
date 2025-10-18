@@ -1,0 +1,803 @@
+#!/usr/bin/env python3
+"""
+Production-Grade Advanced Optimization
+CORRECTED based on expert review
+
+Key fixes:
+- Proper label merging for temperature scaling
+- Unified threshold-free scoring for PR-AUC
+- Stratified K-fold cross-validation
+- Explicit data_range in MS-SSIM
+- Simplified ORB with ratio test only
+- Average Precision (AP) reporting
+- Platt scaling option for calibration
+"""
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+import json
+from sklearn.metrics import precision_recall_curve, auc, average_precision_score
+from sklearn.model_selection import StratifiedKFold
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import LogisticRegression
+from scipy.optimize import minimize
+import warnings
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 1: UNIFIED SCORING (THRESHOLD-FREE)
+# ═══════════════════════════════════════════════════════════════
+
+def unified_score(clip_scores: np.ndarray,
+                  ssim_scores: np.ndarray,
+                  orb_inliers: np.ndarray,
+                  calibrated_clip: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Compute unified threshold-free decision score
+    
+    Key insight: Use raw scores WITHOUT thresholds for PR curve computation
+    This avoids circular dependency and gives true PR-AUC
+    
+    Args:
+        clip_scores: Raw CLIP cosine similarities (0-1)
+        ssim_scores: Raw SSIM scores (0-1)
+        orb_inliers: ORB inlier counts (0-inf)
+        calibrated_clip: Optional calibrated CLIP scores
+    
+    Returns:
+        Unified scores (0-1) suitable for precision_recall_curve
+    
+    Reference: sklearn.metrics.precision_recall_curve expects monotonic scores
+    """
+    
+    # Use calibrated CLIP if available
+    clip = calibrated_clip if calibrated_clip is not None else clip_scores
+    
+    # Normalize components to [0, 1]
+    clip_n = np.clip(clip, 0, 1)
+    ssim_n = np.clip(ssim_scores, 0, 1)
+    
+    # Soft-saturate ORB inliers (tanh to bound to [0, 1])
+    orb_n = np.tanh(orb_inliers / 50.0)
+    
+    # Take maximum of (semantic+structure) vs geometry
+    # This reflects detection logic: (CLIP AND SSIM) OR (ORB passes)
+    semantic_structure = 0.5 * (clip_n + ssim_n)
+    unified = np.maximum(semantic_structure, orb_n)
+    
+    return unified
+
+
+def compute_pr_metrics(y_true: np.ndarray, scores: np.ndarray) -> Dict:
+    """
+    Compute comprehensive PR metrics
+    
+    Returns:
+        Dict with PR-AUC, AP, recall@precision≥95%, etc.
+    """
+    
+    # Compute PR curve
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+    
+    # PR-AUC (using sklearn convention)
+    pr_auc = auc(recall, precision)
+    
+    # Average Precision (standard metric)
+    ap = average_precision_score(y_true, scores)
+    
+    # Recall at precision floor (e.g., ≥95%)
+    recall_at_95p, threshold_at_95p = recall_at_precision_floor(
+        y_true, scores, floor=0.95
+    )
+    
+    # FPR at precision floor
+    fpr_at_95p = compute_fpr_at_threshold(y_true, scores, threshold_at_95p)
+    
+    return {
+        'pr_auc': float(pr_auc),
+        'average_precision': float(ap),
+        'recall_at_95p_precision': float(recall_at_95p),
+        'threshold_at_95p_precision': float(threshold_at_95p) if threshold_at_95p is not None else None,
+        'fpr_at_95p_precision': float(fpr_at_95p),
+        'precision_curve': precision.tolist(),
+        'recall_curve': recall.tolist(),
+        'thresholds': thresholds.tolist()
+    }
+
+
+def recall_at_precision_floor(y_true: np.ndarray,
+                              scores: np.ndarray,
+                              floor: float = 0.95) -> Tuple[float, Optional[float]]:
+    """
+    Find maximum recall that maintains precision ≥ floor
+    
+    Returns:
+        (recall, threshold) or (0.0, None) if no threshold achieves floor
+    """
+    
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+    
+    # Thresholds align with precision[:-1] and recall[:-1]
+    valid_indices = np.where(precision[:-1] >= floor)[0]
+    
+    if len(valid_indices) == 0:
+        return 0.0, None
+    
+    # Find index with maximum recall among valid
+    best_idx = valid_indices[np.argmax(recall[valid_indices])]
+    
+    return recall[best_idx], thresholds[best_idx]
+
+
+def compute_fpr_at_threshold(y_true: np.ndarray,
+                             scores: np.ndarray,
+                             threshold: Optional[float]) -> float:
+    """Compute FPR at specific threshold"""
+    
+    if threshold is None:
+        return 1.0
+    
+    y_pred = (scores >= threshold).astype(int)
+    
+    fp = np.sum((y_pred == 1) & (y_true == 0))
+    tn = np.sum((y_pred == 0) & (y_true == 0))
+    
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    return fpr
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 2: PROPER CALIBRATION (PLATT SCALING)
+# ═══════════════════════════════════════════════════════════════
+
+class ProperCalibrator:
+    """
+    Proper score calibration using Platt scaling or Isotonic regression
+    
+    Key insight: CLIP cosine is NOT a calibrated probability
+    Use Platt (logistic) or Isotonic for proper calibration
+    
+    Reference: Guo et al. 2017 - temperature scaling assumes logits
+               sklearn CalibratedClassifierCV for Platt/Isotonic
+    """
+    
+    def __init__(self, method: str = 'platt'):
+        """
+        Args:
+            method: 'platt' (logistic) or 'isotonic'
+        """
+        self.method = method
+        self.calibrator = None
+        self.fitted = False
+    
+    def fit(self, scores: np.ndarray, labels: np.ndarray):
+        """
+        Fit calibration model
+        
+        Args:
+            scores: Raw similarity scores (0-1)
+            labels: Ground truth (0 or 1)
+        """
+        
+        print(f"\n🌡️  CALIBRATION ({self.method.upper()})")
+        print("="*70)
+        
+        # Reshape for sklearn
+        X = scores.reshape(-1, 1)
+        y = labels
+        
+        if self.method == 'platt':
+            # Platt scaling: fit logistic regression
+            self.calibrator = LogisticRegression()
+            self.calibrator.fit(X, y)
+            
+            print(f"   Fitted Platt scaling")
+            print(f"   Coefficients: a={self.calibrator.coef_[0][0]:.4f}, b={self.calibrator.intercept_[0]:.4f}")
+            
+        elif self.method == 'isotonic':
+            # Isotonic regression (non-parametric)
+            from sklearn.isotonic import IsotonicRegression
+            self.calibrator = IsotonicRegression(out_of_bounds='clip')
+            self.calibrator.fit(X.ravel(), y)
+            
+            print(f"   Fitted Isotonic regression")
+        
+        else:
+            raise ValueError(f"Unknown method: {self.method}")
+        
+        self.fitted = True
+        
+        # Evaluate calibration improvement
+        scores_before = scores
+        scores_after = self.transform(scores)
+        
+        # Compute log loss before/after
+        from sklearn.metrics import log_loss
+        
+        # Clip to avoid log(0)
+        scores_before_clipped = np.clip(scores_before, 1e-7, 1 - 1e-7)
+        scores_after_clipped = np.clip(scores_after, 1e-7, 1 - 1e-7)
+        
+        ll_before = log_loss(y, scores_before_clipped)
+        ll_after = log_loss(y, scores_after_clipped)
+        
+        print(f"   Log-loss before: {ll_before:.4f}")
+        print(f"   Log-loss after:  {ll_after:.4f}")
+        print(f"   Improvement: {(ll_before - ll_after) / ll_before * 100:.2f}%")
+    
+    def transform(self, scores: np.ndarray) -> np.ndarray:
+        """Apply calibration to scores"""
+        
+        if not self.fitted:
+            warnings.warn("Calibrator not fitted. Returning raw scores.")
+            return scores
+        
+        X = scores.reshape(-1, 1)
+        
+        if self.method == 'platt':
+            calibrated = self.calibrator.predict_proba(X)[:, 1]
+        else:
+            calibrated = self.calibrator.predict(X.ravel())
+        
+        return calibrated
+    
+    def fit_transform(self, scores: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        """Fit and transform in one step"""
+        self.fit(scores, labels)
+        return self.transform(scores)
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 3: CORRECTED MS-SSIM
+# ═══════════════════════════════════════════════════════════════
+
+def compute_ms_ssim_corrected(img_a: np.ndarray,
+                              img_b: np.ndarray,
+                              weights: Optional[List[float]] = None) -> float:
+    """
+    Multi-Scale SSIM with proper data_range handling
+    
+    CRITICAL FIXES:
+    - Always specify data_range (255 for uint8, 1.0 for float)
+    - Ensure images are same size before pyramid
+    - Use Wang et al. standard weights
+    
+    Reference: Wang et al. 2003 - MS-SSIM paper
+               scikit-image docs on data_range parameter
+    """
+    
+    from skimage.metrics import structural_similarity as ssim_func
+    import cv2
+    
+    if weights is None:
+        # Standard MS-SSIM weights (Wang et al. 2003)
+        weights = np.array([0.0448, 0.2856, 0.3001, 0.2363, 0.1333])
+    else:
+        weights = np.array(weights)
+    
+    n_scales = len(weights)
+    
+    # Convert to grayscale
+    if img_a.ndim == 3:
+        img_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
+    if img_b.ndim == 3:
+        img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
+    
+    # Resize to common dimensions
+    h = min(img_a.shape[0], img_b.shape[0])
+    w = min(img_a.shape[1], img_b.shape[1])
+    img_a = img_a[:h, :w]
+    img_b = img_b[:h, :w]
+    
+    # Ensure uint8 for consistent data_range
+    if img_a.dtype != np.uint8:
+        img_a = cv2.normalize(img_a, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    if img_b.dtype != np.uint8:
+        img_b = cv2.normalize(img_b, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    data_range = 255.0  # Explicit for uint8
+    
+    # Check if image is large enough for all scales
+    min_size = 2 ** (n_scales - 1) * 11  # 11 is SSIM window size
+    if min(h, w) < min_size:
+        # Reduce number of scales
+        n_scales = max(1, int(np.log2(min(h, w) / 11)) + 1)
+        weights = weights[:n_scales]
+        weights = weights / weights.sum()  # Renormalize
+    
+    # Compute SSIM at each scale
+    ms_ssim_components = []
+    
+    for scale_idx in range(n_scales):
+        try:
+            # CRITICAL: Always specify data_range
+            ssim_val = ssim_func(
+                img_a, img_b,
+                data_range=data_range,
+                gaussian_weights=True,
+                sigma=1.5,
+                use_sample_covariance=False
+            )
+            ms_ssim_components.append(ssim_val)
+        except Exception as e:
+            # Fallback to last valid value if computation fails
+            if len(ms_ssim_components) > 0:
+                ms_ssim_components.append(ms_ssim_components[-1])
+            else:
+                ms_ssim_components.append(0.0)
+        
+        # Downsample for next scale (if not last scale)
+        if scale_idx < n_scales - 1:
+            img_a = cv2.pyrDown(img_a)
+            img_b = cv2.pyrDown(img_b)
+    
+    # Weighted geometric mean (Wang et al. formula)
+    ms_ssim = np.prod([c ** w for c, w in zip(ms_ssim_components, weights)])
+    
+    return float(ms_ssim)
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 4: SIMPLIFIED ORB VERIFIER
+# ═══════════════════════════════════════════════════════════════
+
+class SimplifiedORBVerifier:
+    """
+    Simplified ORB verification following OpenCV best practices
+    
+    FIXES:
+    - Use ratio test (0.75-0.8) only, not cross-check + ratio
+    - Document Lowe's recommendation (0.8) vs stricter choice (0.75)
+    - Standard OpenCV pattern: knnMatch + ratio → RANSAC
+    
+    Reference: Lowe 2004 (SIFT paper, section on ratio test)
+               OpenCV feature matching tutorial
+    """
+    
+    def __init__(self,
+                 ratio_threshold: float = 0.75,
+                 ransac_reproj_threshold: float = 4.0,
+                 min_inliers: int = 30,
+                 min_inlier_ratio: float = 0.30):
+        """
+        Args:
+            ratio_threshold: Lowe's ratio (0.8 typical, 0.75 stricter)
+        """
+        self.ratio_threshold = ratio_threshold
+        self.ransac_reproj_threshold = ransac_reproj_threshold
+        self.min_inliers = min_inliers
+        self.min_inlier_ratio = min_inlier_ratio
+        
+        # Document the choice
+        if ratio_threshold == 0.75:
+            self.ratio_note = "Stricter than Lowe's 0.8 (prioritizes precision)"
+        elif ratio_threshold == 0.8:
+            self.ratio_note = "Lowe's standard recommendation"
+        else:
+            self.ratio_note = f"Custom ratio: {ratio_threshold}"
+    
+    def verify_pair(self, img_a: np.ndarray, img_b: np.ndarray) -> Dict:
+        """
+        Verify geometric duplicate using ORB + RANSAC
+        
+        Standard pattern:
+        1. ORB feature extraction
+        2. knnMatch with k=2
+        3. Lowe's ratio test
+        4. RANSAC homography
+        5. Reprojection error check
+        """
+        import cv2
+        
+        # Extract ORB features
+        orb = cv2.ORB_create(nfeatures=1000)
+        kp_a, desc_a = orb.detectAndCompute(img_a, None)
+        kp_b, desc_b = orb.detectAndCompute(img_b, None)
+        
+        if desc_a is None or desc_b is None or len(kp_a) < 10 or len(kp_b) < 10:
+            return {
+                'verified': False,
+                'reason': 'insufficient_features',
+                'inliers': 0
+            }
+        
+        # BFMatcher with Hamming distance
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        
+        # knnMatch with k=2 for ratio test
+        matches = bf.knnMatch(desc_a, desc_b, k=2)
+        
+        # Lowe's ratio test (standard OpenCV pattern)
+        good_matches = []
+        for match_pair in matches:
+            if len(match_pair) == 2:
+                m, n = match_pair
+                if m.distance < self.ratio_threshold * n.distance:
+                    good_matches.append(m)
+        
+        if len(good_matches) < 10:
+            return {
+                'verified': False,
+                'reason': 'insufficient_matches',
+                'matches': len(good_matches),
+                'inliers': 0
+            }
+        
+        # Extract matched keypoint coordinates
+        pts_a = np.float32([kp_a[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        pts_b = np.float32([kp_b[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        
+        # RANSAC homography estimation
+        H, mask = cv2.findHomography(
+            pts_a, pts_b,
+            cv2.RANSAC,
+            ransacReprojThreshold=self.ransac_reproj_threshold
+        )
+        
+        if H is None or mask is None:
+            return {
+                'verified': False,
+                'reason': 'ransac_failed',
+                'inliers': 0
+            }
+        
+        # Count inliers
+        inliers = np.sum(mask)
+        inlier_ratio = inliers / len(good_matches)
+        
+        # Compute reprojection error on inliers
+        inlier_pts_a = pts_a[mask.ravel() == 1]
+        inlier_pts_b = pts_b[mask.ravel() == 1]
+        
+        if len(inlier_pts_a) >= 4:
+            # Homomorphic coordinates
+            inlier_pts_a_h = np.hstack([
+                inlier_pts_a.reshape(-1, 2),
+                np.ones((len(inlier_pts_a), 1))
+            ])
+            
+            # Project through homography
+            projected = (H @ inlier_pts_a_h.T).T
+            projected = projected[:, :2] / projected[:, 2:3]
+            
+            # Compute reprojection errors
+            errors = np.linalg.norm(projected - inlier_pts_b.reshape(-1, 2), axis=1)
+            median_error = np.median(errors)
+        else:
+            median_error = float('inf')
+        
+        # Verification decision
+        verified = (
+            inliers >= self.min_inliers and
+            inlier_ratio >= self.min_inlier_ratio and
+            median_error <= self.ransac_reproj_threshold
+        )
+        
+        return {
+            'verified': verified,
+            'inliers': int(inliers),
+            'inlier_ratio': float(inlier_ratio),
+            'reproj_error': float(median_error),
+            'total_matches': len(good_matches),
+            'homography': H.tolist() if H is not None else None,
+            'ratio_test_note': self.ratio_note
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 5: STRATIFIED K-FOLD OPTIMIZATION
+# ═══════════════════════════════════════════════════════════════
+
+class StratifiedPROptimizer:
+    """
+    PR-driven optimization with Stratified K-fold cross-validation
+    
+    KEY IMPROVEMENTS:
+    - Stratified folds to handle class imbalance
+    - Evaluate on held-out folds to avoid overfitting
+    - Report mean ± std across folds
+    - Use same objective (recall@precision≥τ) globally and per-modality
+    
+    Reference: sklearn.model_selection.StratifiedKFold
+    """
+    
+    def __init__(self, target_precision: float = 0.95, n_folds: int = 5):
+        self.target_precision = target_precision
+        self.n_folds = n_folds
+        self.best_thresholds = {}
+    
+    def optimize_with_cv(self,
+                        validation_results: pd.DataFrame,
+                        ground_truth: pd.DataFrame) -> Dict:
+        """
+        Optimize thresholds using stratified K-fold CV
+        
+        CRITICAL FIX: Merge ground truth labels correctly
+        """
+        
+        print("\n" + "="*70)
+        print("🎯 STRATIFIED K-FOLD PR OPTIMIZATION")
+        print("="*70)
+        print(f"Target: Maximize recall at ≥{self.target_precision*100:.0f}% precision")
+        print(f"Folds: {self.n_folds}-fold stratified cross-validation")
+        
+        # CRITICAL FIX: Merge validation results with ground truth
+        merged = validation_results.merge(
+            ground_truth[['pair_id', 'should_detect', 'modality']],
+            on='pair_id',
+            how='inner'
+        )
+        
+        if len(merged) == 0:
+            raise ValueError("No matching pairs after merge. Check pair_id column.")
+        
+        # Extract features and labels
+        y = merged['should_detect'].astype(int).values
+        
+        clip_scores = merged['clip_score'].fillna(0).values
+        ssim_scores = merged['ssim_score'].fillna(0).values
+        orb_inliers = merged.get('orb_inliers', pd.Series(0, index=merged.index)).fillna(0).values
+        
+        # Stratified K-fold
+        skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=42)
+        
+        fold_results = []
+        
+        print(f"\n🔄 Running {self.n_folds}-fold CV...")
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(skf.split(np.zeros(len(y)), y), 1):
+            print(f"\n  Fold {fold_idx}/{self.n_folds}...")
+            
+            # Split data
+            y_train = y[train_idx]
+            y_val = y[val_idx]
+            
+            clip_train, clip_val = clip_scores[train_idx], clip_scores[val_idx]
+            ssim_train, ssim_val = ssim_scores[train_idx], ssim_scores[val_idx]
+            orb_train, orb_val = orb_inliers[train_idx], orb_inliers[val_idx]
+            
+            # Grid search on training fold
+            best_params, best_recall = self._grid_search_fold(
+                y_train, clip_train, ssim_train, orb_train
+            )
+            
+            # Evaluate on validation fold
+            fold_metrics = self._evaluate_on_fold(
+                y_val, clip_val, ssim_val, orb_val, best_params
+            )
+            
+            fold_results.append({
+                'fold': fold_idx,
+                'thresholds': best_params,
+                'metrics': fold_metrics
+            })
+            
+            print(f"    Val recall@{self.target_precision*100:.0f}%prec: {fold_metrics['recall']:.4f}")
+        
+        # Aggregate across folds
+        recall_values = [r['metrics']['recall'] for r in fold_results]
+        precision_values = [r['metrics']['precision'] for r in fold_results]
+        fpr_values = [r['metrics']['fpr'] for r in fold_results]
+        
+        # Select thresholds from best fold
+        best_fold_idx = np.argmax(recall_values)
+        self.best_thresholds = fold_results[best_fold_idx]['thresholds']
+        
+        # Compute statistics
+        results = {
+            'optimal_thresholds': self.best_thresholds,
+            'cv_metrics': {
+                'recall_mean': float(np.mean(recall_values)),
+                'recall_std': float(np.std(recall_values)),
+                'precision_mean': float(np.mean(precision_values)),
+                'precision_std': float(np.std(precision_values)),
+                'fpr_mean': float(np.mean(fpr_values)),
+                'fpr_std': float(np.std(fpr_values))
+            },
+            'fold_results': fold_results
+        }
+        
+        # Print summary
+        print(f"\n✅ Cross-Validation Complete!")
+        print(f"\n📊 Optimal Thresholds (from best fold):")
+        print(f"   CLIP:        ≥ {self.best_thresholds['clip_threshold']:.3f}")
+        print(f"   SSIM:        ≥ {self.best_thresholds['ssim_threshold']:.3f}")
+        print(f"   ORB Inliers: ≥ {self.best_thresholds['orb_min_inliers']}")
+        
+        print(f"\n📈 Cross-Validation Performance:")
+        print(f"   Recall:    {results['cv_metrics']['recall_mean']:.4f} ± {results['cv_metrics']['recall_std']:.4f}")
+        print(f"   Precision: {results['cv_metrics']['precision_mean']:.4f} ± {results['cv_metrics']['precision_std']:.4f}")
+        print(f"   FPR:       {results['cv_metrics']['fpr_mean']:.4f} ± {results['cv_metrics']['fpr_std']:.4f}")
+        
+        return results
+    
+    def _grid_search_fold(self, y_true, clip_scores, ssim_scores, orb_inliers):
+        """Grid search on a single fold"""
+        
+        # Coarse grid
+        param_grid = {
+            'clip': np.arange(0.90, 0.98, 0.02),
+            'ssim': np.arange(0.85, 0.96, 0.05),
+            'orb_inliers': [0, 20, 30]
+        }
+        
+        best_recall = 0.0
+        best_params = None
+        
+        for clip_thresh in param_grid['clip']:
+            for ssim_thresh in param_grid['ssim']:
+                for orb_thresh in param_grid['orb_inliers']:
+                    
+                    # Apply thresholds
+                    clip_pass = clip_scores >= clip_thresh
+                    ssim_pass = ssim_scores >= ssim_thresh
+                    orb_pass = orb_inliers >= orb_thresh
+                    
+                    y_pred = ((clip_pass & ssim_pass) | orb_pass).astype(int)
+                    
+                    # Compute metrics
+                    tp = np.sum((y_pred == 1) & (y_true == 1))
+                    fp = np.sum((y_pred == 1) & (y_true == 0))
+                    fn = np.sum((y_pred == 0) & (y_true == 1))
+                    
+                    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                    
+                    # Check if meets precision target and improves recall
+                    if precision >= self.target_precision and recall > best_recall:
+                        best_recall = recall
+                        best_params = {
+                            'clip_threshold': clip_thresh,
+                            'ssim_threshold': ssim_thresh,
+                            'orb_min_inliers': orb_thresh
+                        }
+        
+        if best_params is None:
+            # Fallback: use default conservative thresholds
+            best_params = {
+                'clip_threshold': 0.96,
+                'ssim_threshold': 0.90,
+                'orb_min_inliers': 30
+            }
+        
+        return best_params, best_recall
+    
+    def _evaluate_on_fold(self, y_true, clip_scores, ssim_scores, orb_inliers, params):
+        """Evaluate thresholds on validation fold"""
+        
+        clip_pass = clip_scores >= params['clip_threshold']
+        ssim_pass = ssim_scores >= params['ssim_threshold']
+        orb_pass = orb_inliers >= params['orb_min_inliers']
+        
+        y_pred = ((clip_pass & ssim_pass) | orb_pass).astype(int)
+        
+        tp = np.sum((y_pred == 1) & (y_true == 1))
+        fp = np.sum((y_pred == 1) & (y_true == 0))
+        fn = np.sum((y_pred == 0) & (y_true == 1))
+        tn = np.sum((y_pred == 0) & (y_true == 0))
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+        
+        return {
+            'precision': precision,
+            'recall': recall,
+            'fpr': fpr
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PART 6: COMPLETE PIPELINE
+# ═══════════════════════════════════════════════════════════════
+
+def run_corrected_optimization_pipeline(validation_dataset_path: Path,
+                                       validation_results_path: Path):
+    """
+    Production-grade optimization pipeline with all fixes
+    
+    Steps:
+    1. Load and merge data correctly
+    2. Compute unified scores for PR curves
+    3. Calibrate CLIP scores (Platt scaling)
+    4. Optimize thresholds with stratified K-fold
+    5. Report AP, PR-AUC, recall@95%precision, FPR
+    """
+    
+    print("="*70)
+    print("🚀 PRODUCTION-GRADE OPTIMIZATION PIPELINE")
+    print("="*70)
+    
+    # Load data
+    manifest_path = validation_dataset_path / 'ground_truth_manifest.json'
+    with open(manifest_path) as f:
+        manifest_data = json.load(f)
+    ground_truth = pd.DataFrame(manifest_data['pairs'])
+    
+    validation_results = pd.read_csv(validation_results_path / 'validation_results.csv')
+    
+    # CRITICAL FIX: Merge correctly
+    merged = validation_results.merge(
+        ground_truth[['pair_id', 'should_detect', 'modality']],
+        on='pair_id',
+        how='inner'
+    )
+    
+    print(f"\n📊 Dataset:")
+    print(f"   Total pairs: {len(merged)}")
+    print(f"   True positives: {merged['should_detect'].sum()}")
+    print(f"   True negatives: {(~merged['should_detect']).sum()}")
+    
+    # Extract features
+    clip_scores = merged['clip_score'].fillna(0).values
+    ssim_scores = merged['ssim_score'].fillna(0).values
+    orb_inliers = merged.get('orb_inliers', pd.Series(0, index=merged.index)).fillna(0).values
+    y_true = merged['should_detect'].astype(int).values
+    
+    # Step 1: Calibrate CLIP scores
+    print("\n" + "="*70)
+    print("STEP 1: CLIP CALIBRATION (PLATT SCALING)")
+    print("="*70)
+    
+    calibrator = ProperCalibrator(method='platt')
+    calibrated_clip = calibrator.fit_transform(clip_scores, y_true)
+    
+    # Step 2: Compute unified scores and PR metrics
+    print("\n" + "="*70)
+    print("STEP 2: PR METRICS (UNIFIED SCORING)")
+    print("="*70)
+    
+    scores = unified_score(clip_scores, ssim_scores, orb_inliers, calibrated_clip)
+    pr_metrics = compute_pr_metrics(y_true, scores)
+    
+    print(f"\n📈 PR Metrics:")
+    print(f"   PR-AUC:                {pr_metrics['pr_auc']:.4f}")
+    print(f"   Average Precision (AP): {pr_metrics['average_precision']:.4f}")
+    print(f"   Recall @ ≥95% Prec:     {pr_metrics['recall_at_95p_precision']:.4f}")
+    print(f"   FPR @ ≥95% Prec:        {pr_metrics['fpr_at_95p_precision']:.4f}")
+    
+    # Step 3: Optimize thresholds with stratified K-fold
+    print("\n" + "="*70)
+    print("STEP 3: THRESHOLD OPTIMIZATION (STRATIFIED K-FOLD)")
+    print("="*70)
+    
+    # Add calibrated scores to results for optimization
+    merged['clip_score_calibrated'] = calibrated_clip
+    
+    optimizer = StratifiedPROptimizer(target_precision=0.95, n_folds=5)
+    cv_results = optimizer.optimize_with_cv(merged, ground_truth)
+    
+    # Step 4: Generate report
+    report = {
+        'calibration': {
+            'method': 'platt',
+            'log_loss_improvement': 'see step 1 output'
+        },
+        'pr_metrics': pr_metrics,
+        'threshold_optimization': cv_results,
+        'recommendations': {
+            'use_calibrated_clip': True,
+            'use_ms_ssim': True,
+            'use_simplified_orb': True,
+            'thresholds': cv_results['optimal_thresholds']
+        }
+    }
+    
+    # Save report
+    output_path = validation_results_path / 'corrected_optimization_report.json'
+    with open(output_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    print("\n" + "="*70)
+    print("✅ OPTIMIZATION COMPLETE")
+    print("="*70)
+    print(f"Report saved to: {output_path}")
+    
+    return report
+
+
+if __name__ == '__main__':
+    print("Production-Grade Advanced Optimization Module")
+    print("All critical fixes applied based on expert review")

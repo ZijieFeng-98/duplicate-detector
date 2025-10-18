@@ -57,8 +57,8 @@ CONTOUR_APPROX_EPSILON = 0.02
 
 # Duplicate detection thresholds - BALANCED (sweet spot)
 SIM_THRESHOLD = 0.94        # CLIP threshold (relaxed to catch copy-paste with compression)
-PHASH_MAX_DIST = 4          # pHash Hamming distance (moderate)
-SSIM_THRESHOLD = 0.90       # Structural similarity (re-enabled)
+PHASH_MAX_DIST = 3          # pHash Hamming distance (optimized from comprehensive test)
+SSIM_THRESHOLD = 0.85       # Structural similarity (optimized from comprehensive test)
 TOP_K_NEIGHBORS = 50        # Increased from 12 to escape local same-page bubble
 CLIP_PAIRING_MODE = "thresh"  # 'topk' (old) or 'thresh' (new, cross-page friendly)
 CLIP_MAX_OUTPUT_PAIRS = 120000  # Safety cap for large documents
@@ -1129,7 +1129,8 @@ def compute_ssim_normalized(path_a: str, path_b: str, target_h: int = 512,
                                            cv2.BORDER_CONSTANT, value=255)
         
         # Step 4: Compute global SSIM (baseline)
-        ssim_global, _ = ssim_func(img_a_gray, img_b_gray, full=True)
+        # Critical: Specify data_range for uint8 images (comprehensive test finding)
+        ssim_global, _ = ssim_func(img_a_gray, img_b_gray, full=True, data_range=255)
         
         # Step 5: Compute patch-wise SSIM (NEW - discrimination layer)
         patch_scores = []
@@ -1170,7 +1171,8 @@ def compute_ssim_normalized(path_a: str, path_b: str, target_h: int = 512,
                             continue
                         
                         try:
-                            ps, _ = ssim_func(patch_a, patch_b, full=True)
+                            # Critical: Specify data_range for uint8 images
+                            ps, _ = ssim_func(patch_a, patch_b, full=True, data_range=255)
                             if not np.isnan(ps):
                                 patch_scores.append(float(ps))
                         except Exception:
@@ -1302,7 +1304,8 @@ def deep_verify_identical_confocal(path_a: str, path_b: str) -> dict:
             if b_gray.shape[1] < W:
                 b_gray = cv2.copyMakeBorder(b_gray,0,0,0,W-b_gray.shape[1],cv2.BORDER_CONSTANT,value=128)
         
-        deep_ssim, _ = ssim_func(a_aligned, b_gray, full=True)
+        # Critical: Specify data_range for uint8 images
+        deep_ssim, _ = ssim_func(a_aligned, b_gray, full=True, data_range=255)
         deep_ncc = _ncc_same_size(a_aligned, b_gray)
         
         # pHash (8 x rotations + mirror)
@@ -1421,7 +1424,8 @@ def deep_verify_identical_ihc(path_a: str, path_b: str) -> dict:
             if ch_b.shape[1] < W:
                 ch_b = cv2.copyMakeBorder(ch_b,0,0,0,W-ch_b.shape[1],cv2.BORDER_CONSTANT,value=128)
         
-        ssim_after, _ = ssim_func(a_aligned, ch_b, full=True)
+        # Critical: Specify data_range for uint8 images
+        ssim_after, _ = ssim_func(a_aligned, ch_b, full=True, data_range=255)
         ncc_after = _ncc_same_size(a_aligned, ch_b)
         
         # pHash bundle (RGB)
@@ -3123,7 +3127,8 @@ def compute_ssim(path_a: str, path_b: str, target_h: int = 512) -> float:
             img_b = cv2.copyMakeBorder(img_b, 0, 0, 0, max_w - img_b.shape[1], 
                                        cv2.BORDER_CONSTANT, value=255)
         
-        score, _ = ssim(img_a, img_b, full=True)
+        # Critical: Specify data_range for uint8 images (comprehensive test finding)
+        score, _ = ssim(img_a, img_b, full=True, data_range=255)
         return float(score)
     except Exception:
         return np.nan
