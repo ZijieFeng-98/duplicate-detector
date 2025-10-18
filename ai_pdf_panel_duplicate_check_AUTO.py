@@ -4547,8 +4547,19 @@ def main():
     
     # ═══ MODALITY DETECTION/ROUTING (if enabled) ═══
     modality_cache = {}
-    if ENABLE_MODALITY_DETECTION or ENABLE_MODALITY_ROUTING:
+    if ENABLE_MODALITY_DETECTION or ENABLE_MODALITY_ROUTING or getattr(args, "tile_first_auto", False):
         modality_cache = get_modality_cache(panels)
+    
+    # ═══ AUTO-ENABLE TILE-FIRST (if --tile-first-auto) ═══
+    if getattr(args, "tile_first_auto", False):
+        confocal_count = sum(1 for v in modality_cache.values() if v.get('modality') == 'confocal')
+        
+        if confocal_count >= 3:
+            print(f"  🔬 Auto-enabling Tile-First ({confocal_count} confocal panels detected)")
+            args.tile_first = True
+        else:
+            print(f"  📊 Using Standard Pipeline ({confocal_count} confocal panels, < threshold)")
+            args.tile_first = False
     
     # ═══ TILE-FIRST FAST-PATH (BYPASSES PANEL PIPELINE) ═══
     if TILE_FIRST_AVAILABLE and getattr(args, "tile_first", False):
@@ -4560,7 +4571,23 @@ def main():
         tfc = TileFirstConfig()
         tfc.CONFOCAL_MIN_GRID = 999        # ← Force NO grid detection
         tfc.WB_MIN_LANES = 999             # ← Force NO lane detection
-        tfc.MICRO_TILE_SIZE = getattr(args, "tile_size", 384)
+        tile_size = getattr(args, "tile_size", 384)
+        
+        # Guardrail: Check if tile size is reasonable
+        try:
+            from PIL import Image
+            sample_images = [Image.open(p) for p in panels[:5]]  # Sample first 5
+            min_dim = min(min(img.size) for img in sample_images)
+            
+            if tile_size > min_dim - 32:
+                old_size = tile_size
+                tile_size = max(256, min_dim - 64)  # Leave margin
+                print(f"  ⚠️  Tile size ({old_size}px) larger than panels ({min_dim}px)")
+                print(f"  ✓ Auto-adjusting to {tile_size}px")
+        except Exception as e:
+            print(f"  ⚠️  Could not validate tile size: {e}")
+        
+        tfc.MICRO_TILE_SIZE = tile_size
         tfc.MICRO_TILE_STRIDE = getattr(args, "tile_stride", 0.65)
         tfc.TILE_CLIP_MIN = SIM_THRESHOLD
         
@@ -4875,6 +4902,8 @@ def parse_cli_args():
     # Tile-first mode (micro-tiles ONLY, bypasses panel pipeline)
     parser.add_argument("--tile-first", action="store_true", default=False, 
                        help="Use tile-first pipeline (micro-tiles ONLY, NO grid detection)")
+    parser.add_argument("--tile-first-auto", action="store_true", default=False,
+                       help="Auto-enable tile-first if ≥3 confocal panels detected")
     parser.add_argument("--tile-size", type=int, default=384, 
                        help="Tile size for micro-tiling (default: 384)")
     parser.add_argument("--tile-stride", type=float, default=0.65, 

@@ -363,6 +363,26 @@ elif page == "⚙️ Configure":
             st.rerun()
         st.stop()
     
+    # ═══════════════════════════════════════════════════════════════
+    # PERSIST USER INTENT: Session State + Query Params
+    # ═══════════════════════════════════════════════════════════════
+    
+    # Initialize from query params (shareable URLs)
+    if 'tile_mode' not in st.session_state:
+        try:
+            # Streamlit 1.30+ uses st.query_params (new API)
+            query_tile_mode = st.query_params.get('tile_mode', 'Auto (Recommended)')
+            st.session_state.tile_mode = query_tile_mode
+        except:
+            # Fallback for older Streamlit versions
+            st.session_state.tile_mode = 'Auto (Recommended)'
+    
+    if 'tile_size' not in st.session_state:
+        st.session_state.tile_size = 384
+    
+    if 'tile_stride' not in st.session_state:
+        st.session_state.tile_stride = 0.65
+    
     st.caption("Choose a preset (recommended) or customize")
     
     # Presets
@@ -455,6 +475,86 @@ elif page == "⚙️ Configure":
         with col3:
             use_tier_gating = st.checkbox("Tiers", preset['use_tier_gating'])
         
+        st.markdown("---")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # TILE-FIRST MODE (Feature Flag)
+        # Owner: Research Team | Review: Q2 2025 | Plan: Merge or Remove
+        # ═══════════════════════════════════════════════════════════════
+        
+        # Check if module is available
+        try:
+            from tile_first_pipeline import TileFirstConfig, run_tile_first_pipeline
+            tile_first_available = True
+        except ImportError:
+            tile_first_available = False
+        
+        st.markdown("**🔬 Micro-Tiles Mode** (Experimental)")
+        
+        if not tile_first_available:
+            st.warning("⚠️ Tile-First module not found. Feature disabled.")
+            tile_mode = "Disabled"
+            tile_size = 384
+            tile_stride = 0.65
+        else:
+            # Three-way radio: Auto / Force ON / Force OFF
+            tile_mode = st.radio(
+                "Tile-First Strategy:",
+                options=["Auto (Recommended)", "Force ON", "Force OFF"],
+                index=0 if st.session_state.tile_mode == "Auto (Recommended)" else (1 if st.session_state.tile_mode == "Force ON" else 2),
+                help="""
+                **Auto:** Use micro-tiles if ≥3 confocal panels detected
+                **Force ON:** Always use micro-tiles only (no panel detection)
+                **Force OFF:** Never use micro-tiles (standard panel pipeline)
+                
+                💡 Micro-tiles = More thorough but slower. Use for confocal grids with false positives.
+                """
+            )
+            
+            # Show parameters only if not Force OFF
+            if tile_mode != "Force OFF":
+                st.markdown("**Tile Parameters:**")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    tile_size = st.slider(
+                        "Tile Size (px)",
+                        min_value=256,
+                        max_value=512,
+                        value=st.session_state.tile_size,
+                        step=32,
+                        help="Size of micro-tiles. Recommended: 384px"
+                    )
+                
+                with col2:
+                    tile_stride = st.slider(
+                        "Stride Ratio",
+                        min_value=0.50,
+                        max_value=0.80,
+                        value=st.session_state.tile_stride,
+                        step=0.05,
+                        format="%.2f",
+                        help="Overlap between tiles. 0.65 = 35% overlap"
+                    )
+                    st.caption(f"Overlap: {(1-tile_stride)*100:.0f}% | Smaller tiles & more overlap = thorough but slower")
+                
+                # Guardrail: Warn if tile size might be too large
+                if tile_size >= 448:
+                    st.warning(f"""
+                    ⚠️ Large tile size ({tile_size}px) may not work well with small panels.
+                    
+                    **Recommendation:** If panels are <500px, try 256-320px tiles.
+                    """)
+                
+                # Performance note
+                if tile_mode == "Force ON" or tile_stride < 0.60:
+                    st.info("⚡ More tiles → more candidate pairs → longer runtime (~2-3x)")
+            else:
+                tile_size = 384
+                tile_stride = 0.65
+        
+        st.markdown("---")
+        
         st.markdown("**Detection Strategy**")
         use_modality_specific = st.radio(
             "Choose Detection Method:",
@@ -485,6 +585,16 @@ elif page == "⚙️ Configure":
     
     with col2:
         if st.button("Start Analysis →", use_container_width=True, type="primary"):
+            # Store query params for shareable URLs
+            try:
+                st.query_params.update({
+                    'tile_mode': tile_mode,
+                    'tile_size': str(tile_size),
+                    'tile_stride': str(tile_stride)
+                })
+            except:
+                pass  # Graceful fallback for older Streamlit
+            
             st.session_state.config = {
                 'dpi': dpi,
                 'sim_threshold': sim_threshold,
@@ -500,8 +610,18 @@ elif page == "⚙️ Configure":
                 'highlight_diffs': True,
                 'suppress_same_page': False,
                 'debug_mode': False,
-                'auto_open': False
+                'auto_open': False,
+                
+                # Tile-First parameters
+                'tile_mode': tile_mode if tile_first_available else "Disabled",
+                'tile_size': tile_size,
+                'tile_stride': tile_stride,
             }
+            
+            # Update session state
+            st.session_state.tile_mode = tile_mode
+            st.session_state.tile_size = tile_size
+            st.session_state.tile_stride = tile_stride
             
             output_dir.mkdir(parents=True, exist_ok=True)
             st.session_state.current_page = "▶️ Run"
@@ -534,7 +654,31 @@ elif page == "▶️ Run":
         st.info(f"Make sure `ai_pdf_panel_duplicate_check_AUTO.py` is in: {detector_script.parent}")
         st.stop()
     
-    # Build command - uses the CLI interface we'll add
+    # ═══════════════════════════════════════════════════════════════
+    # SINGLE DECISION POINT: Route to Tile-First or Standard Pipeline
+    # ═══════════════════════════════════════════════════════════════
+    
+    tile_mode = config.get('tile_mode', 'Auto (Recommended)')
+    tile_first_enabled = False
+    mode_reason = ""
+    
+    # Decision logic
+    if tile_mode == "Force ON":
+        tile_first_enabled = True
+        mode_reason = "user requested Force ON"
+    elif tile_mode == "Force OFF":
+        tile_first_enabled = False
+        mode_reason = "user requested Force OFF"
+    elif tile_mode == "Auto (Recommended)":
+        # Auto-enable heuristic: ≥3 confocal panels
+        # (We don't know panel count yet, so we'll pass --tile-first-auto flag)
+        tile_first_enabled = "auto"
+        mode_reason = "auto-detect (≥3 confocal panels)"
+    else:
+        tile_first_enabled = False
+        mode_reason = "module disabled"
+    
+    # Build command
     cmd = [
         sys.executable, str(detector_script),
         "--pdf", str(st.session_state.pdf_path),
@@ -561,6 +705,26 @@ elif page == "▶️ Run":
         cmd.append("--use-modality-specific")
         cmd.append("--enable-modality-detection")
     
+    # Tile-First routing (single decision point)
+    if tile_first_enabled == True:
+        # Force ON
+        cmd.append("--tile-first")
+        cmd.append("--tile-size")
+        cmd.append(str(config.get('tile_size', 384)))
+        cmd.append("--tile-stride")
+        cmd.append(str(config.get('tile_stride', 0.65)))
+    elif tile_first_enabled == "auto":
+        # Auto mode - let backend decide
+        cmd.append("--tile-first-auto")
+        cmd.append("--tile-size")
+        cmd.append(str(config.get('tile_size', 384)))
+        cmd.append("--tile-stride")
+        cmd.append(str(config.get('tile_stride', 0.65)))
+    # else: Force OFF or Disabled - don't add any flags
+    
+    # Log mode for debugging
+    print(f"🔬 Tile-First Mode: {tile_mode} ({mode_reason})")
+    
     # Progress patterns
     stage_patterns = [
         (re.compile(r'converting pdf', re.I), "Converting PDF", 0.15),
@@ -577,7 +741,16 @@ elif page == "▶️ Run":
         start_time = time.time()
         current_progress = 0.05
         progress_bar.progress(current_progress)
-        status_text.info("⏳ Starting analysis...")
+        
+        # Show mode in status
+        if tile_first_enabled == True:
+            mode_badge = f"🔬 Tile-First (tiles: {config.get('tile_size', 384)}px, overlap: {(1-config.get('tile_stride', 0.65))*100:.0f}%)"
+        elif tile_first_enabled == "auto":
+            mode_badge = f"🔬 Tile-First (Auto-detect)"
+        else:
+            mode_badge = "📊 Standard Pipeline"
+        
+        status_text.info(f"⏳ Starting analysis... {mode_badge}")
         
         proc = subprocess.Popen(
             cmd,
@@ -684,6 +857,20 @@ elif page == "📊 Results":
     results = st.session_state.results
     output_dir = Path(results['output_dir'])
     
+    # ═══════════════════════════════════════════════════════════════
+    # RUN MODE BANNER (one-liner)
+    # ═══════════════════════════════════════════════════════════════
+    if st.session_state.config:
+        tile_mode = st.session_state.config.get('tile_mode', 'Standard')
+        if tile_mode == "Force ON":
+            tile_size = st.session_state.config.get('tile_size', 384)
+            tile_stride = st.session_state.config.get('tile_stride', 0.65)
+            st.info(f"🔬 **Mode:** Tile-First ({tile_size}px, stride {tile_stride:.2f})")
+        elif tile_mode == "Auto (Recommended)":
+            st.info(f"🔬 **Mode:** Tile-First (Auto-detect)")
+        else:
+            st.caption("📊 **Mode:** Standard (auto-tile when needed)")
+    
     # Summary
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -770,7 +957,7 @@ elif page == "📊 Results":
                         clip_val = row.get('Cosine_Similarity', 'N/A')
                         if pd.notna(clip_val) and clip_val != '':
                             st.metric("🎯 CLIP", f"{float(clip_val):.3f}")
-                        else:
+    else:
                             st.metric("🎯 CLIP", "N/A")
                     with col2:
                         ssim_val = row.get('SSIM', 'N/A')
@@ -1336,7 +1523,7 @@ phash_max_dist:   {result['current_params']['phash_max_dist']}
     with col3:
         if st.button("▶️ Re-run Analysis", use_container_width=True):
             st.session_state.current_page = "▶️ Run"
-            st.rerun()
+        st.rerun()
 
 # Footer
 st.markdown("---")
