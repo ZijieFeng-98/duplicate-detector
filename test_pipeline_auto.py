@@ -34,12 +34,18 @@ TEST_CONFIGS = [
     {
         "name": "Balanced_Default",
         "args": ["--sim-threshold", "0.96", "--ssim-threshold", "0.9", "--phash-max-dist", "4"],
-        "expect_results": True
+        "expect_results": True,
+        "expected_runtime": 90.0,  # Baseline from October 18, 2025
+        "expected_panels": 107,
+        "expected_pairs_min": 100
     },
     {
         "name": "Permissive",
         "args": ["--sim-threshold", "0.85", "--ssim-threshold", "0.70", "--phash-max-dist", "6"],
-        "expect_results": True
+        "expect_results": True,
+        "expected_runtime": 300.0,  # Baseline from October 18, 2025
+        "expected_panels": 107,
+        "expected_pairs_min": 600
     }
 ]
 
@@ -426,6 +432,239 @@ def test_metadata_integrity(output_dir, logger):
         return False
 
 
+def test_sklearn_import(logger):
+    """Test 9: Verify sklearn deployment fix"""
+    logger.test_start("sklearn Import (Deployment Fix)")
+    
+    try:
+        # Test both import styles that caused issues
+        import sklearn
+        from sklearn.metrics.pairwise import cosine_similarity
+        logger.success("sklearn imported successfully")
+        
+        # Verify it's the right version
+        version = sklearn.__version__
+        logger.info(f"sklearn version: {version}")
+        
+        major, minor = map(int, version.split('.')[:2])
+        if (major, minor) >= (1, 3):
+            logger.success("sklearn version ≥ 1.3.0")
+            return True
+        else:
+            logger.warning(f"sklearn version {version} < 1.3.0")
+            return False
+            
+    except ImportError as e:
+        logger.failure(f"sklearn import failed: {e}")
+        return False
+
+
+def test_empty_tsv_handling(output_dir, logger):
+    """Test 10: Verify empty TSV never generated"""
+    logger.test_start("Empty TSV Prevention")
+    
+    final_report = output_dir / "final_merged_report.tsv"
+    if not final_report.exists():
+        logger.warning("No TSV file to check")
+        return True
+    
+    size = final_report.stat().st_size
+    
+    # Header line alone is ~100 bytes, so <50 = truly empty
+    if size < 50:
+        logger.failure(f"Empty TSV detected: {final_report.name}")
+        return False
+    
+    # Verify has at least header
+    try:
+        import pandas as pd
+        df = pd.read_csv(final_report, sep='\t')
+        if 'Image_A' not in df.columns:
+            logger.failure(f"Invalid TSV structure: missing Image_A column")
+            return False
+        
+        logger.success(f"{final_report.name}: {size} bytes, {len(df)} rows")
+        return True
+    except Exception as e:
+        logger.failure(f"TSV parse error: {e}")
+        return False
+
+
+def test_performance_benchmarks(output_dir, config, logger):
+    """Test 11: Performance regression detection"""
+    logger.test_start(f"Performance Benchmarks: {config['name']}")
+    
+    metadata_file = output_dir / "RUN_METADATA.json"
+    if not metadata_file.exists():
+        logger.warning("No metadata to check performance")
+        return True
+    
+    metadata = json.loads(metadata_file.read_text(encoding='utf-8'))
+    runtime = metadata.get('runtime_seconds', 0)
+    expected_runtime = config.get('expected_runtime', None)
+    
+    if expected_runtime is None:
+        logger.info(f"Runtime: {runtime:.1f}s (no baseline)")
+        return True
+    
+    # Allow 20% variance
+    tolerance = expected_runtime * 0.20
+    min_acceptable = expected_runtime - tolerance
+    max_acceptable = expected_runtime + tolerance
+    
+    if runtime < min_acceptable:
+        logger.success(f"🚀 Performance improvement! {runtime:.1f}s (baseline: {expected_runtime:.1f}s)")
+    elif runtime > max_acceptable:
+        logger.warning(f"⚠️  Performance regression: {runtime:.1f}s (expected: {expected_runtime:.1f}s, +{((runtime/expected_runtime - 1) * 100):.1f}%)")
+    else:
+        logger.success(f"Performance within tolerance: {runtime:.1f}s (baseline: {expected_runtime:.1f}s)")
+    
+    return True
+
+
+def test_visual_comparison_quality(output_dir, logger):
+    """Test 12: Verify visual comparisons are valid images"""
+    logger.test_start("Visual Comparison Quality")
+    
+    comp_dir = output_dir / "duplicate_comparisons"
+    if not comp_dir.exists():
+        logger.info("No visual comparisons (no duplicates or disabled)")
+        return True
+    
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        logger.warning("PIL/numpy not available for validation")
+        return True
+    
+    # Check comparison images
+    images = list(comp_dir.glob("pair_*.png"))
+    if not images:
+        logger.info("No comparison images found")
+        return True
+    
+    valid_count = 0
+    
+    for img_path in images[:5]:  # Sample first 5
+        try:
+            img = Image.open(img_path)
+            width, height = img.size
+            
+            # Sanity checks
+            if width < 100 or height < 100:
+                logger.failure(f"{img_path.name}: Too small ({width}×{height})")
+                continue
+            
+            if img.mode not in ['RGB', 'RGBA', 'L']:
+                logger.failure(f"{img_path.name}: Invalid mode ({img.mode})")
+                continue
+            
+            # Check it's not blank
+            arr = np.array(img)
+            if arr.std() < 1:  # Nearly uniform
+                logger.failure(f"{img_path.name}: Appears blank (std={arr.std():.2f})")
+                continue
+            
+            valid_count += 1
+            logger.success(f"{img_path.name}: Valid ({width}×{height}, {img.mode})")
+            
+        except Exception as e:
+            logger.failure(f"{img_path.name}: {e}")
+    
+    if valid_count == 0 and len(images) > 0:
+        logger.failure("No valid comparison images")
+        return False
+    
+    logger.success(f"{valid_count}/{min(len(images), 5)} sampled images valid")
+    return True
+
+
+# ============================================================================
+# TEST HISTORY & REPORTING
+# ============================================================================
+
+def get_git_commit():
+    """Get current git commit hash"""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except:
+        return "unknown"
+
+
+def track_test_run(logger):
+    """Append test results to history"""
+    history_file = Path("test_history.json")
+    
+    history = []
+    if history_file.exists():
+        try:
+            history = json.loads(history_file.read_text(encoding='utf-8'))
+        except:
+            history = []
+    
+    elapsed = (datetime.now() - logger.start_time).total_seconds()
+    
+    history.append({
+        "timestamp": datetime.now().isoformat(),
+        "tests_run": logger.tests_run,
+        "tests_passed": logger.tests_passed,
+        "tests_failed": logger.tests_failed,
+        "runtime_seconds": elapsed,
+        "git_commit": get_git_commit(),
+    })
+    
+    # Keep last 50 runs
+    history = history[-50:]
+    
+    try:
+        history_file.write_text(json.dumps(history, indent=2), encoding='utf-8')
+        print(f"📈 Test history updated: {len(history)} runs tracked")
+    except Exception as e:
+        print(f"⚠️  Could not update test history: {e}")
+
+
+def generate_test_summary(logger):
+    """Generate markdown summary of test results"""
+    output_file = TEST_OUTPUT_DIR / "test_summary.txt"
+    
+    elapsed = (datetime.now() - logger.start_time).total_seconds()
+    success_rate = (100 * logger.tests_passed / max(logger.tests_run, 1))
+    
+    summary = f"""
+# 🧪 Test Summary
+
+**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Status:** {'✅ PASSED' if logger.tests_failed == 0 else '❌ FAILED'}
+
+## Results
+- Total Tests: {logger.tests_run}
+- Passed: {logger.tests_passed} ✅
+- Failed: {logger.tests_failed} ❌
+- Success Rate: {success_rate:.1f}%
+
+## Performance
+- Runtime: {elapsed:.1f}s
+
+## Artifacts
+Test outputs saved to: `{TEST_OUTPUT_DIR}/`
+
+---
+*Generated by test_pipeline_auto.py*
+"""
+    
+    try:
+        output_file.write_text(summary, encoding='utf-8')
+        print(f"\n📄 Summary saved to: {output_file}")
+    except Exception as e:
+        print(f"⚠️  Could not save summary: {e}")
+
+
 # ============================================================================
 # MAIN TEST RUNNER
 # ============================================================================
@@ -456,6 +695,9 @@ def run_all_tests():
         logger.failure(f"Test PDF not found: {TEST_PDF_PATH}")
         return logger.summary()
     
+    # Test 9: sklearn import (deployment fix)
+    test_sklearn_import(logger)
+    
     # Run tests for each config
     for config in TEST_CONFIGS:
         
@@ -471,6 +713,15 @@ def run_all_tests():
         test_duplicate_detection(output_dir, config, logger)
         test_tier_classification(output_dir, logger)
         test_metadata_integrity(output_dir, logger)
+        
+        # Test 10-12: Advanced validation
+        test_empty_tsv_handling(output_dir, logger)
+        test_performance_benchmarks(output_dir, config, logger)
+        test_visual_comparison_quality(output_dir, logger)
+    
+    # Generate reports
+    generate_test_summary(logger)
+    track_test_run(logger)
     
     # Final summary
     return logger.summary()

@@ -129,6 +129,35 @@ metrics:
     - "Cache hit rate"
     - "Panels processed per second"
 
+# Test baselines (from October 18, 2025 test run)
+performance_baselines:
+  balanced_config:
+    runtime_seconds: 82.1
+    panels_detected: 107
+    duplicate_pairs: 108
+    tier_a_count: 24
+    tier_b_count: 31
+  
+  permissive_config:
+    runtime_seconds: 293.7
+    panels_detected: 107
+    duplicate_pairs: 707
+    tier_a_count: 37
+    tier_b_count: 32
+
+# Alert if regressions detected
+regression_alerts:
+  runtime_increase: "20%"  # Warn if >20% slower
+  detection_drop: "10%"    # Warn if <10% fewer pairs
+  tier_a_drop: "15%"       # Warn if Tier A significantly reduced
+
+# Quick test commands
+quick_commands:
+  test_all: "python test_pipeline_auto.py"
+  test_quick: "./quick_test.sh"
+  check_history: "cat test_history.json | jq '.[-5:]'"
+  view_summary: "cat test_output/test_summary.txt"
+
 # Documentation standards
 documentation:
   - "Update README.md for major features"
