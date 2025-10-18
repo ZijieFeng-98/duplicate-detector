@@ -29,6 +29,13 @@ except ImportError:
     TILE_MODULE_AVAILABLE = False
     print("⚠️  Tile detection module not found, using panel-level only")
 
+# Tile-first pipeline (micro-tiles ONLY, NO GRID)
+try:
+    from tile_first_pipeline import TileFirstConfig, run_tile_first_pipeline
+    TILE_FIRST_AVAILABLE = True
+except ImportError:
+    TILE_FIRST_AVAILABLE = False
+
 # --- CONFIG -------------------------------------------------------------------
 PDF_PATH = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/STM-Combined Figures.pdf")
 OUT_DIR  = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/ai_clip_output")
@@ -4543,6 +4550,51 @@ def main():
     if ENABLE_MODALITY_DETECTION or ENABLE_MODALITY_ROUTING:
         modality_cache = get_modality_cache(panels)
     
+    # ═══ TILE-FIRST FAST-PATH (BYPASSES PANEL PIPELINE) ═══
+    if TILE_FIRST_AVAILABLE and getattr(args, "tile_first", False):
+        print(f"\n╔══════════════════════════════════════════════════════════════════╗")
+        print(f"║  🔬 TILE-FIRST MODE: Micro-Tiles ONLY (NO GRID DETECTION)       ║")
+        print(f"╚══════════════════════════════════════════════════════════════════╝")
+        
+        # Configure tile-first
+        tfc = TileFirstConfig()
+        tfc.CONFOCAL_MIN_GRID = 999        # ← Force NO grid detection
+        tfc.WB_MIN_LANES = 999             # ← Force NO lane detection
+        tfc.MICRO_TILE_SIZE = getattr(args, "tile_size", 384)
+        tfc.MICRO_TILE_STRIDE = getattr(args, "tile_stride", 0.65)
+        tfc.TILE_CLIP_MIN = SIM_THRESHOLD
+        
+        # Load CLIP model
+        from open_clip_wrapper import load_clip
+        clip_model, preprocess = load_clip(device=DEVICE)
+        
+        # Run tile-first pipeline
+        df_merged = run_tile_first_pipeline(
+            panel_paths=[str(p) for p in panels],
+            clip_model=clip_model,
+            preprocess=preprocess,
+            device=DEVICE,
+            config=tfc
+        )
+        
+        # Save results
+        final_path = OUT_DIR / "final_merged_report.tsv"
+        df_merged.to_csv(final_path, sep="\t", index=False)
+        
+        print(f"\n  ✓ Final report: {final_path}")
+        print(f"     Total pairs: {len(df_merged)}")
+        if len(df_merged) > 0:
+            print(f"     Tier A: {len(df_merged[df_merged['Tier'] == 'A'])}")
+            print(f"     Tier B: {len(df_merged[df_merged['Tier'] == 'B'])}")
+        
+        print(f"\n{'='*70}")
+        print(f"  ✅ TILE-FIRST PIPELINE COMPLETE")
+        print(f"{'='*70}")
+        print(f"  ⏱️  Runtime: {time.time() - START_TIME:.1f}s")
+        print(f"{'='*70}")
+        
+        return  # ← CRITICAL: Exit here, skip panel pipeline
+    
     # ═══ STAGE 1: CLIP SEMANTIC FILTERING ═══
     print(f"\n[Stage 1] CLIP semantic filtering (≥{SIM_THRESHOLD})...")
     
@@ -4819,6 +4871,14 @@ def parse_cli_args():
     parser.add_argument("--enable-tile-mode", dest="enable_tile_mode", action="store_true", help="Force enable sub-panel tile verification")
     parser.add_argument("--disable-tile-mode", dest="disable_tile_mode", action="store_true", help="Disable tile mode (even if confocal detected)")
     parser.set_defaults(enable_tile_mode=False, disable_tile_mode=False)
+    
+    # Tile-first mode (micro-tiles ONLY, bypasses panel pipeline)
+    parser.add_argument("--tile-first", action="store_true", default=False, 
+                       help="Use tile-first pipeline (micro-tiles ONLY, NO grid detection)")
+    parser.add_argument("--tile-size", type=int, default=384, 
+                       help="Tile size for micro-tiling (default: 384)")
+    parser.add_argument("--tile-stride", type=float, default=0.65, 
+                       help="Tile stride ratio for overlap (default: 0.65 = 35%% overlap)")
     
     # Output customization
     parser.add_argument("--out-suffix", type=str, default="", help="Append suffix to output directory for this run")
