@@ -169,7 +169,15 @@ def cleanup_old_files():
 @st.cache_data(show_spinner=False, ttl=300)  # 5-minute TTL for quick re-runs
 def load_report(tsv_path: Path):
     """Load TSV report with caching and auto-refresh"""
-    return pd.read_csv(BytesIO(tsv_path.read_bytes()), sep="\t", low_memory=False)
+    try:
+        file_bytes = tsv_path.read_bytes()
+        if len(file_bytes) == 0:
+            raise ValueError("TSV file is empty - detection may have failed or is still running")
+        return pd.read_csv(BytesIO(file_bytes), sep="\t", low_memory=False)
+    except pd.errors.EmptyDataError:
+        raise ValueError("TSV file is empty - detection may have failed or is still running")
+    except FileNotFoundError:
+        raise ValueError(f"TSV file not found: {tsv_path}")
 
 def parse_results(output_dir: Path) -> dict:
     """Parse results with validation"""
@@ -1175,7 +1183,12 @@ elif page == "📊 Results":
     st.subheader("🔍 Results Table")
     
     if tsv_path.exists():
-        df = load_report(tsv_path)
+        try:
+            df = load_report(tsv_path)
+        except ValueError as e:
+            st.error(f"⚠️ {str(e)}")
+            st.info("The detection process may have encountered an error. Please check the logs or try running again.")
+            st.stop()
         
         # Normalize Tier column
         if 'Tier' not in df.columns:
