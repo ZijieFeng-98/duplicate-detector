@@ -4667,8 +4667,21 @@ def main():
                 if pd.notna(path):
                     print(f"        • {path}: {count} pair(s)")
     
-    # ═══ TILE-BASED DETECTION (OPTIONAL) ═══
-    if TILE_MODULE_AVAILABLE and hasattr(args, 'enable_tile_mode') and args.enable_tile_mode:
+    # ═══ TILE-BASED DETECTION (AUTO FOR CONFOCAL) ═══
+    # Auto-enable tile mode if confocal images detected, or if explicitly requested
+    enable_tile_mode = False
+    if TILE_MODULE_AVAILABLE:
+        if hasattr(args, 'enable_tile_mode') and args.enable_tile_mode:
+            enable_tile_mode = True
+            print(f"  🔬 Tile mode: ENABLED (via --enable-tile-mode flag)")
+        elif modality_cache and not (hasattr(args, 'disable_tile_mode') and args.disable_tile_mode):
+            # Check if we have confocal images (auto-enable)
+            confocal_count = sum(1 for v in modality_cache.values() if v.get('modality') == 'confocal')
+            if confocal_count >= 3:  # At least 3 confocal panels
+                enable_tile_mode = True
+                print(f"  🔬 Tile mode: AUTO-ENABLED (detected {confocal_count} confocal panels)")
+    
+    if enable_tile_mode:
         import re
         
         # Build page map from panel paths
@@ -4802,10 +4815,10 @@ def parse_cli_args():
     parser.add_argument("--enable-orb-relax", action="store_true", default=False, help="Enable high-confidence relaxed ORB detection for tough partial duplicates")
     parser.add_argument("--disable-orb-relax", action="store_true", help="Explicitly disable ORB relax (overrides config file)")
     
-    # Tile-based detection (EXPERIMENTAL)
-    parser.add_argument("--enable-tile-mode", dest="enable_tile_mode", action="store_true", help="Enable sub-panel tile verification for confocal grids (EXPERIMENTAL)")
-    parser.add_argument("--disable-tile-mode", dest="enable_tile_mode", action="store_false", help="Disable tile mode")
-    parser.set_defaults(enable_tile_mode=False)
+    # Tile-based detection (AUTO-ENABLED for confocal)
+    parser.add_argument("--enable-tile-mode", dest="enable_tile_mode", action="store_true", help="Force enable sub-panel tile verification")
+    parser.add_argument("--disable-tile-mode", dest="disable_tile_mode", action="store_true", help="Disable tile mode (even if confocal detected)")
+    parser.set_defaults(enable_tile_mode=False, disable_tile_mode=False)
     
     # Output customization
     parser.add_argument("--out-suffix", type=str, default="", help="Append suffix to output directory for this run")
