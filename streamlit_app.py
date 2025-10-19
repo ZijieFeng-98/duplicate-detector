@@ -1134,41 +1134,41 @@ elif page == "📊 Results":
                                 )
                     else:
                         st.info(f"Visualizations not found for pair #{seq_num:03d}")
-    
-    st.markdown("---")
-    
-    # Display Tier B pairs (collapsible)
-    if len(tier_b) > 0:
-        with st.expander(f"⚠️ Tier B - Manual Check ({len(tier_b)} pairs)", expanded=False):
-            st.caption("These pairs require manual verification")
-            
-            for seq_num in range(len(tier_a) + 1, len(tier_a) + len(tier_b) + 1):
-                idx = tier_b.index[seq_num - len(tier_a) - 1]
-                row = tier_b.loc[idx]
+        
+        st.markdown("---")
+        
+        # Display Tier B pairs (collapsible)
+        if len(tier_b) > 0:
+            with st.expander(f"⚠️ Tier B - Manual Check ({len(tier_b)} pairs)", expanded=False):
+                st.caption("These pairs require manual verification")
                 
-                pair_path_a = row.get('Path_A', row.get('Image_A', ''))
-                pair_path_b = row.get('Path_B', row.get('Image_B', ''))
-                img_a_name = Path(pair_path_a).name if pair_path_a else f"Image A"
-                img_b_name = Path(pair_path_b).name if pair_path_b else f"Image B"
-                
-                st.markdown(f"**Pair #{seq_num:03d}**: {img_a_name} vs {img_b_name}")
-                
-                pair_dir = comp_dir / f"pair_{seq_num:03d}_detailed"
-                if pair_dir.exists():
-                    img_a_path = pair_dir / "1_raw_A.png"
-                    img_b_path = pair_dir / "2_raw_B_aligned.png"
+                for seq_num in range(len(tier_a) + 1, len(tier_a) + len(tier_b) + 1):
+                    idx = tier_b.index[seq_num - len(tier_a) - 1]
+                    row = tier_b.loc[idx]
                     
-                    if img_a_path.exists() and img_b_path.exists():
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.image(str(img_a_path), use_container_width=True)
-                        with col2:
-                            st.image(str(img_b_path), use_container_width=True)
-                
-                st.markdown("---")
+                    pair_path_a = row.get('Path_A', row.get('Image_A', ''))
+                    pair_path_b = row.get('Path_B', row.get('Image_B', ''))
+                    img_a_name = Path(pair_path_a).name if pair_path_a else f"Image A"
+                    img_b_name = Path(pair_path_b).name if pair_path_b else f"Image B"
+                    
+                    st.markdown(f"**Pair #{seq_num:03d}**: {img_a_name} vs {img_b_name}")
+                    
+                    pair_dir = comp_dir / f"pair_{seq_num:03d}_detailed"
+                    if pair_dir.exists():
+                        img_a_path = pair_dir / "1_raw_A.png"
+                        img_b_path = pair_dir / "2_raw_B_aligned.png"
+                        
+                        if img_a_path.exists() and img_b_path.exists():
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(str(img_a_path), use_container_width=True)
+                            with col2:
+                                st.image(str(img_b_path), use_container_width=True)
+                    
+                    st.markdown("---")
         
         # Display other pairs (if any)
-    if len(other) > 0:
+        if len(other) > 0:
             with st.expander(f"📋 Other Pairs ({len(other)} pairs)", expanded=False):
                 st.caption("Lower confidence pairs")
                 for seq_num in range(len(tier_a) + len(tier_b) + 1, len(tier_a) + len(tier_b) + len(other) + 1):
