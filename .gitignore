@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+venv_test/
 ai_env/
 
 # IDE
@@ -24,6 +25,7 @@ Thumbs.db
 # Output
 ai_clip_output/
 duplicate_detector/
+test_output/
 *.pdf
 *.zip
 
@@ -32,6 +34,6 @@ duplicate_detector/
 *.pkl
 cache/
 
-
+# Test artifacts
 validation_real_test/
 validation_synthetic_test/
