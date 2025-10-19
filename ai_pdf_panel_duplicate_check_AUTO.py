@@ -4609,9 +4609,56 @@ def main():
     # ═══ STAGE 0: PREPROCESSING ═══
     print("\n[Stage 0] Preprocessing...")
     
+    # Validate PDF file
+    if not PDF_PATH.exists():
+        print(f"❌ ERROR: PDF file not found!")
+        print(f"   Path: {PDF_PATH}")
+        print(f"   Absolute: {PDF_PATH.absolute()}")
+        print("\n💡 This usually means:")
+        print("   1. The file wasn't uploaded correctly")
+        print("   2. The path is wrong")
+        print("   3. File permissions issue")
+        sys.exit(1)
+    
+    if not PDF_PATH.is_file():
+        print(f"❌ ERROR: Path exists but is not a file!")
+        print(f"   Path: {PDF_PATH}")
+        sys.exit(1)
+    
+    # Check if readable
+    try:
+        with open(PDF_PATH, 'rb') as f:
+            # Try to read first 8 bytes (PDF signature)
+            header = f.read(8)
+            if not header.startswith(b'%PDF'):
+                print(f"❌ ERROR: File is not a valid PDF!")
+                print(f"   Header: {header}")
+                print(f"   Expected: %PDF-...")
+                sys.exit(1)
+    except PermissionError:
+        print(f"❌ ERROR: No permission to read PDF file!")
+        print(f"   Path: {PDF_PATH}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ ERROR: Cannot read PDF file!")
+        print(f"   Path: {PDF_PATH}")
+        print(f"   Error: {e}")
+        sys.exit(1)
+    
+    print(f"✓ PDF file validated: {PDF_PATH.name} ({PDF_PATH.stat().st_size / 1024 / 1024:.1f}MB)")
+    
+    # Extract pages
     pages = pdf_to_pages(PDF_PATH, OUT_DIR, DPI)
     if not pages:
-        print("❌ No pages extracted")
+        print("❌ ERROR: No pages extracted from PDF")
+        print("\n💡 This usually means:")
+        print("   1. PDF is password-protected")
+        print("   2. PDF is corrupted")
+        print("   3. PyMuPDF failed to process the file")
+        print("\n🔍 Try:")
+        print("   - Open the PDF in another viewer to verify it works")
+        print("   - Re-export the PDF from the source application")
+        print("   - Check for encryption or restrictions")
         return
     stage_counts['pages'] = len(pages)
     
