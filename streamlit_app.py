@@ -686,11 +686,22 @@ elif page == "▶️ Run":
         tile_first_enabled = False
         mode_reason = "module disabled"
     
+    # Validate PDF file exists
+    pdf_path = Path(st.session_state.pdf_path)
+    if not pdf_path.exists():
+        st.error(f"❌ PDF file not found: {pdf_path}")
+        st.error("This may be a file upload or permissions issue on Streamlit Cloud")
+        st.info("💡 Try re-uploading your PDF")
+        if st.button("← Back to Upload"):
+            st.session_state.current_page = "📤 Upload"
+            st.rerun()
+        st.stop()
+    
     # Build command
     cmd = [
         sys.executable, str(detector_script),
-        "--pdf", str(st.session_state.pdf_path),
-        "--output", str(config['output_dir']),
+        "--pdf", str(pdf_path.absolute()),  # Use absolute path
+        "--output", str(Path(config['output_dir']).absolute()),
         "--dpi", str(config['dpi']),
         "--sim-threshold", str(config['sim_threshold']),
         "--phash-max-dist", str(config['phash_max_dist']),
@@ -698,6 +709,12 @@ elif page == "▶️ Run":
         "--batch-size", str(config['batch_size']),
         "--no-auto-open",  # Don't open browser in Streamlit
     ]
+    
+    # Debug: Log file info
+    st.info(f"📄 Processing: {pdf_path.name} ({pdf_path.stat().st_size / 1024 / 1024:.1f}MB)")
+    print(f"DEBUG: PDF path: {pdf_path.absolute()}")
+    print(f"DEBUG: PDF exists: {pdf_path.exists()}")
+    print(f"DEBUG: PDF readable: {os.access(pdf_path, os.R_OK)}")
     
     if config['use_phash_bundles']:
         cmd.append("--use-phash-bundles")
