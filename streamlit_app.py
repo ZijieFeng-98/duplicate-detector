@@ -504,7 +504,7 @@ elif page == "⚙️ Configure":
             tile_mode = "Disabled"
             tile_size = 384
             tile_stride = 0.65
-        else:
+    else:
             # Three-way radio: Auto / Force ON / Force OFF
             tile_mode = st.radio(
                 "Tile-First Strategy:",
@@ -837,11 +837,20 @@ elif page == "▶️ Run":
         else:
             st.error(f"❌ Analysis failed (exit code {return_code})")
             st.info("Check logs above for details")
+            
+            # Show last 50 lines of error output
+            if log_lines:
+                with st.expander("🔍 Error Output (Last 50 Lines)", expanded=True):
+                    st.code("\n".join(log_lines[-50:]))
     
     except Exception as e:
         st.error(f"❌ Error: {e}")
         import traceback
         st.code(traceback.format_exc())
+        
+        # Show command that failed
+        st.warning("**Failed Command:**")
+        st.code(" ".join(str(c) for c in cmd))
     finally:
         try:
             proc.kill()
@@ -947,12 +956,12 @@ elif page == "📊 Results":
                 # Read temp file for download
                 with open(tmp_path, 'rb') as f:
                     zip_bytes = f.read()
-                
-                st.download_button(
-                    "📦 Download All (ZIP)",
+            
+            st.download_button(
+                "📦 Download All (ZIP)",
                     data=zip_bytes,
-                    file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                    mime="application/zip",
+                file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
                     use_container_width=True,
                     help="Includes TSV report, metadata, and first 50 pairs (memory-safe)"
                 )
@@ -1110,8 +1119,8 @@ elif page == "📊 Results":
                                     file_name=f"pair_{seq_num:03d}_interactive.html",
                                     mime="text/html",
                                     key=f"cdn_{seq_num}",
-                                    use_container_width=True
-                                )
+                use_container_width=True
+            )
                         
                         with col2:
                             if offline_html.exists():
@@ -1125,9 +1134,9 @@ elif page == "📊 Results":
                                 )
                     else:
                         st.info(f"Visualizations not found for pair #{seq_num:03d}")
-                    
-                    st.markdown("---")
-        
+    
+    st.markdown("---")
+    
         # Display Tier B pairs (collapsible)
         if len(tier_b) > 0:
             with st.expander(f"⚠️ Tier B - Manual Check ({len(tier_b)} pairs)", expanded=False):
@@ -1184,7 +1193,7 @@ elif page == "📊 Results":
     
     if tsv_path.exists():
         try:
-            df = load_report(tsv_path)
+        df = load_report(tsv_path)
         except ValueError as e:
             st.error(f"⚠️ {str(e)}")
             st.info("The detection process may have encountered an error. Please check the logs or try running again.")
