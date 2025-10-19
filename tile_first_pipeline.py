@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-Tile-First Pipeline: Micro-Tiles ONLY (NO GRID DETECTION)
+Tile-First Pipeline: MEMORY-SAFE Micro-Tiles (NO GRID DETECTION)
 
-This module provides pure micro-tile extraction with NO grid or lane detection.
-All images are uniformly tiled into 384×384 overlapping tiles.
+This module provides pure micro-tile extraction optimized for Streamlit Cloud (1GB RAM limit).
 
-Configuration:
-- CONFOCAL_MIN_GRID = 999  (impossible → never detects grids)
-- WB_MIN_LANES = 999       (impossible → never detects lanes)
-- MICRO_TILE_SIZE = 384    (uniform tile size for all images)
+Key Features:
+- Streaming CLIP embeddings (no memory spike)
+- Automatic tile downsampling (max 200 tiles)
+- Chunked similarity search (avoids N×N matrix)
+- Graceful error recovery (returns empty DF instead of crash)
 """
 
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Callable
 import numpy as np
 import pandas as pd
 import cv2
 from tqdm import tqdm
+import warnings
+import gc
 
 class TileFirstConfig:
-    """Configuration for pure micro-tile extraction (NO GRID)"""
+    """Configuration for memory-safe micro-tile extraction"""
     
     # FORCE MICRO-TILES ONLY (NO GRID DETECTION)
     CONFOCAL_MIN_GRID = 999        # Impossible → never detects grids
@@ -28,6 +30,13 @@ class TileFirstConfig:
     # Micro-tile parameters
     MICRO_TILE_SIZE = 384          # 384×384 tiles (uniform for all images)
     MICRO_TILE_STRIDE = 0.65       # 35% overlap between tiles
+    
+    # Memory protection (NEW for Streamlit Cloud)
+    MAX_TILES_TOTAL = 200          # Hard limit for memory safety
+    BATCH_SIZE = 16                # Conservative batch size (reduced from 32)
+    ENABLE_AUTO_DOWNSAMPLING = True # Auto-reduce if too many tiles
+    MEMORY_SAFE_MODE = True        # Enable all memory optimizations
+    CHUNK_SIZE = 50                # For chunked similarity search
     
     # Candidate generation
     TILE_CLIP_MIN = 0.96           # CLIP similarity threshold
@@ -72,319 +81,425 @@ def extract_micro_tiles(image_path: str, config: TileFirstConfig) -> List[Dict]:
             bbox = (x, y, tile_size, tile_size)
             tile_data = img[y:y+tile_size, x:x+tile_size].copy()
             
-            tiles.append({
-                'tile_id': tile_id,
-                'image_path': image_path,
-                'bbox': bbox,
-                'tile_data': tile_data
-            })
-            tile_idx += 1
-    
-    # Add edge tiles if needed
-    if h > tile_size and (h - tile_size) % stride != 0:
-        for x in range(0, max(1, w - tile_size + 1), stride):
-            tile_id = f"{panel_id}_t{tile_idx}"
-            bbox = (x, h - tile_size, tile_size, tile_size)
-            tile_data = img[h-tile_size:h, x:x+tile_size].copy()
-            tiles.append({'tile_id': tile_id, 'image_path': image_path, 'bbox': bbox, 'tile_data': tile_data})
-            tile_idx += 1
-    
-    if w > tile_size and (w - tile_size) % stride != 0:
-        for y in range(0, max(1, h - tile_size + 1), stride):
-            tile_id = f"{panel_id}_t{tile_idx}"
-            bbox = (w - tile_size, y, tile_size, tile_size)
-            tile_data = img[y:y+tile_size, w-tile_size:w].copy()
-            tiles.append({'tile_id': tile_id, 'image_path': image_path, 'bbox': bbox, 'tile_data': tile_data})
-            tile_idx += 1
+            # Only store tiles that are full size
+            if tile_data.shape[0] == tile_size and tile_data.shape[1] == tile_size:
+                tiles.append({
+                    'tile_id': tile_id,
+                    'image_path': image_path,
+                    'bbox': bbox,
+                    'tile_data': tile_data
+                })
+                tile_idx += 1
     
     return tiles
 
 
-def compute_tile_embeddings(tiles: List[Dict], clip_model, preprocess, device) -> np.ndarray:
-    """Compute CLIP embeddings for all tiles"""
+def extract_tiles_memory_safe(panel_paths: List[str], config: TileFirstConfig) -> List[Dict]:
+    """
+    Extract tiles with memory protection for Streamlit Cloud.
+    
+    - Limits total tiles to MAX_TILES_TOTAL
+    - Auto-adjusts stride if needed
+    - Random sampling if still too many
+    """
+    all_tiles = []
+    tiles_per_panel = []
+    
+    print(f"\n  Extracting micro-tiles (memory-safe mode)...")
+    print(f"  Max tiles: {config.MAX_TILES_TOTAL}")
+    
+    # First pass: extract from all panels
+    for panel_path in tqdm(panel_paths, desc="Extracting tiles"):
+        tiles = extract_micro_tiles(panel_path, config)
+        tiles_per_panel.append(len(tiles))
+        all_tiles.extend(tiles)
+        
+        # Early exit if approaching limit
+        if config.MEMORY_SAFE_MODE and len(all_tiles) > config.MAX_TILES_TOTAL * 1.5:
+            warnings.warn(
+                f"⚠️  Tile count ({len(all_tiles)}) exceeds safe limit. "
+                f"Stopping early to conserve memory."
+            )
+            break
+    
+    # If too many tiles, downsample
+    if len(all_tiles) > config.MAX_TILES_TOTAL:
+        import random
+        random.seed(42)  # Deterministic
+        
+        original_count = len(all_tiles)
+        all_tiles = random.sample(all_tiles, config.MAX_TILES_TOTAL)
+        
+        warnings.warn(
+            f"⚠️  Downsampled {original_count} → {len(all_tiles)} tiles for memory safety"
+        )
+    
+    print(f"  ✓ Extracted {len(all_tiles)} tiles from {len(panel_paths)} panels")
+    if tiles_per_panel:
+        print(f"    Avg tiles/panel: {np.mean(tiles_per_panel):.1f}")
+    
+    return all_tiles
+
+
+def compute_tile_embeddings_streaming(
+    tiles: List[Dict],
+    clip_model,
+    preprocess,
+    device: str,
+    batch_size: int = 16
+) -> np.ndarray:
+    """
+    Memory-safe streaming CLIP embedding computation.
+    
+    Key optimizations:
+    - Small batch size (16 vs 32)
+    - Explicit cache clearing after each batch
+    - No intermediate storage of full embedding matrix
+    - Graceful handling of failed tiles
+    """
     import torch
     from PIL import Image
     
     embeddings = []
-    batch_size = 32
+    total_batches = (len(tiles) + batch_size - 1) // batch_size
     
-    for i in tqdm(range(0, len(tiles), batch_size), desc="Computing tile CLIP"):
-        batch_tiles = tiles[i:i+batch_size]
-        batch_images = []
+    print(f"  Computing CLIP embeddings (streaming mode, batch={batch_size})...")
+    
+    for batch_idx in tqdm(range(0, len(tiles), batch_size), desc="Computing tile CLIP", total=total_batches):
+        batch_tiles = tiles[batch_idx:batch_idx + batch_size]
         
+        # Load images for this batch
+        batch_imgs = []
         for tile in batch_tiles:
-            tile_bgr = tile['tile_data']
-            tile_rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(tile_rgb)
-            batch_images.append(preprocess(pil_img))
+            try:
+                tile_bgr = tile['tile_data']
+                tile_rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(tile_rgb)
+                batch_imgs.append(preprocess(pil_img))
+            except Exception as e:
+                warnings.warn(f"Failed to process tile {tile.get('tile_id', '?')}: {e}")
+                # Use zero embedding as fallback
+                batch_imgs.append(torch.zeros(3, 224, 224))
         
-        with torch.no_grad():
-            batch_tensor = torch.stack(batch_images).to(device)
-            batch_features = clip_model.encode_image(batch_tensor)
-            batch_features = batch_features / batch_features.norm(dim=-1, keepdim=True)
-            embeddings.append(batch_features.cpu().numpy())
+        if not batch_imgs:
+            continue
+        
+        # Compute embeddings for this batch
+        try:
+            with torch.no_grad():
+                x = torch.stack(batch_imgs).to(device)
+                feats = clip_model.encode_image(x)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+                
+                # Store as numpy immediately
+                embeddings.append(feats.cpu().numpy())
+                
+                # Critical: Clear cache after each batch
+                del x, feats, batch_imgs
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
+                gc.collect()
+        
+        except RuntimeError as e:
+            if 'out of memory' in str(e).lower():
+                warnings.warn(f"OOM at batch {batch_idx//batch_size}, skipping batch")
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
+                gc.collect()
+                # Add zero embeddings for this batch
+                embeddings.append(np.zeros((len(batch_tiles), 512), dtype=np.float32))
+            else:
+                raise
     
-    return np.vstack(embeddings)
+    if not embeddings:
+        return np.zeros((0, 512), dtype=np.float32)
+    
+    result = np.vstack(embeddings)
+    print(f"  ✓ Computed {len(result)} embeddings")
+    
+    return result
 
 
-def find_tile_candidates(tiles: List[Dict], embeddings: np.ndarray, config: TileFirstConfig) -> List[Tuple]:
+def find_tile_candidates_memory_safe(
+    tiles: List[Dict],
+    embeddings: np.ndarray,
+    config: TileFirstConfig
+) -> List[Tuple[int, int, float]]:
     """
-    Find candidate tile pairs using CLIP similarity.
+    Memory-efficient tile matching using chunked similarity search.
     
-    Returns list of (tile_idx_a, tile_idx_b, clip_similarity) tuples.
+    Avoids creating full N×N similarity matrix by processing in chunks.
     """
-    from sklearn.metrics.pairwise import cosine_similarity
+    if len(embeddings) == 0:
+        return []
     
-    print(f"\n[Tile Candidate Generation]")
-    sim_matrix = cosine_similarity(embeddings)
-    candidates = []
+    matches = []
+    n = len(embeddings)
+    chunk_size = config.CHUNK_SIZE
     
-    # Build panel index
-    panel_for_tile = {}
-    for idx, tile in enumerate(tiles):
-        panel_for_tile[idx] = tile['image_path']
+    print(f"  Finding candidate tile pairs (chunked search)...")
     
-    for i in range(len(tiles)):
-        similarities = sim_matrix[i]
-        top_indices = np.argsort(similarities)[::-1]
+    # Process in chunks to avoid memory spike
+    for i in tqdm(range(0, n, chunk_size), desc="Candidate search"):
+        i_end = min(i + chunk_size, n)
+        chunk_emb = embeddings[i:i_end]
         
-        count = 0
-        for j in top_indices:
-            if i == j:
-                continue
-            if similarities[j] < config.TILE_CLIP_MIN:
-                break
-            # Skip same-panel comparisons
-            if panel_for_tile[i] == panel_for_tile[j]:
-                continue
+        # Compare chunk against all embeddings
+        sims = chunk_emb @ embeddings.T  # Only chunk_size × N, not N × N
+        
+        # Find matches above threshold
+        for local_idx in range(len(chunk_emb)):
+            global_idx = i + local_idx
             
-            candidates.append((i, j, similarities[j]))
-            count += 1
-            if count >= config.TILE_TOPK:
-                break
+            # Only consider j > global_idx (avoid duplicates)
+            for j in range(global_idx + 1, n):
+                score = float(sims[local_idx, j])
+                
+                # Check threshold and same-panel filter
+                if score >= config.TILE_CLIP_MIN:
+                    # Skip same panel
+                    if tiles[global_idx]['image_path'] == tiles[j]['image_path']:
+                        continue
+                    
+                    matches.append((global_idx, j, score))
+        
+        # Clear chunk
+        del sims
+        gc.collect()
     
-    # Remove duplicates
-    seen = set()
-    unique_candidates = []
-    for i, j, sim in candidates:
-        pair = tuple(sorted([i, j]))
-        if pair not in seen:
-            seen.add(pair)
-            unique_candidates.append((i, j, sim))
+    print(f"  ✓ Found {len(matches)} candidate pairs")
     
-    print(f"  ✓ Generated {len(unique_candidates)} tile candidate pairs (CLIP ≥ {config.TILE_CLIP_MIN})")
-    return unique_candidates
+    return matches
 
 
 def verify_tile_pair(tile_a: Dict, tile_b: Dict, config: TileFirstConfig) -> Dict:
     """
-    Verify if two tiles match using SSIM + pHash.
+    Verify a tile pair using SSIM and pHash.
     
     Returns dict with:
-    - match: bool (True if verified match)
+    - match: bool (True if verified)
     - ssim: float
     - phash_dist: int
-    - method: str ("Tile-Exact" or "Tile-SSIM")
     """
-    from skimage.metrics import structural_similarity as ssim_func
-    from PIL import Image
+    from skimage.metrics import structural_similarity as ssim
     import imagehash
+    from PIL import Image
     
-    img_a = tile_a['tile_data']
-    img_b = tile_b['tile_data']
-    
-    # Convert to PIL for pHash
-    pil_a = Image.fromarray(cv2.cvtColor(img_a, cv2.COLOR_BGR2RGB))
-    pil_b = Image.fromarray(cv2.cvtColor(img_b, cv2.COLOR_BGR2RGB))
-    
-    hash_a = imagehash.phash(pil_a)
-    hash_b = imagehash.phash(pil_b)
-    phash_dist = hash_a - hash_b
-    
-    # Fast path: exact pHash match
-    if phash_dist <= config.TILE_PHASH_MAX:
+    try:
+        # Convert to grayscale for SSIM
+        gray_a = cv2.cvtColor(tile_a['tile_data'], cv2.COLOR_BGR2GRAY)
+        gray_b = cv2.cvtColor(tile_b['tile_data'], cv2.COLOR_BGR2GRAY)
+        
+        # Compute SSIM
+        ssim_score = ssim(gray_a, gray_b, data_range=255)
+        
+        # Compute pHash
+        pil_a = Image.fromarray(cv2.cvtColor(tile_a['tile_data'], cv2.COLOR_BGR2RGB))
+        pil_b = Image.fromarray(cv2.cvtColor(tile_b['tile_data'], cv2.COLOR_BGR2RGB))
+        
+        phash_a = imagehash.phash(pil_a)
+        phash_b = imagehash.phash(pil_b)
+        phash_dist = int(phash_a - phash_b)
+        
+        # Check thresholds
+        match = (ssim_score >= config.TILE_SSIM_MIN) or (phash_dist <= config.TILE_PHASH_MAX)
+        
         return {
-            'match': True,
-            'ssim': 1.0,
-            'phash_dist': int(phash_dist),
-            'method': 'Tile-Exact'
+            'match': match,
+            'ssim': float(ssim_score),
+            'phash_dist': phash_dist
         }
     
-    # Verify with SSIM
-    gray_a = cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY)
-    gray_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)
-    
-    # Resize if needed
-    if gray_a.shape != gray_b.shape:
-        gray_b = cv2.resize(gray_b, (gray_a.shape[1], gray_a.shape[0]))
-    
-    ssim_val = ssim_func(gray_a, gray_b)
-    
-    if ssim_val >= config.TILE_SSIM_MIN:
-        return {
-            'match': True,
-            'ssim': float(ssim_val),
-            'phash_dist': int(phash_dist),
-            'method': 'Tile-SSIM'
-        }
-    
-    return {
-        'match': False,
-        'ssim': float(ssim_val),
-        'phash_dist': int(phash_dist),
-        'method': None
-    }
+    except Exception as e:
+        warnings.warn(f"Verification failed: {e}")
+        return {'match': False, 'ssim': 0.0, 'phash_dist': 999}
 
 
-def aggregate_tile_matches(tiles: List[Dict], verified_pairs: List[Dict], config: TileFirstConfig) -> pd.DataFrame:
+def aggregate_tile_matches(
+    tiles: List[Dict],
+    verified_pairs: List[Dict],
+    config: TileFirstConfig
+) -> pd.DataFrame:
     """
-    Aggregate tile-level matches to panel-level pairs.
+    Aggregate tile matches to panel-level pairs.
     
-    Returns DataFrame with columns:
-    - Image_A, Image_B: Panel paths
-    - Matched_Tiles: Number of matching tiles
-    - Tier: 'A', 'B', or None
-    - Tier_A_Tiles: List of Tier-A quality tiles
-    - Matched_Positions: List of tile IDs that matched
-    - Best_SSIM, Best_pHash: Best match quality
-    - Extraction_Method: Always "micro"
+    Groups tile matches by panel pair and applies tier gating.
     """
+    if not verified_pairs:
+        return pd.DataFrame()
+    
     # Group by panel pair
-    panel_matches = {}
+    panel_groups = {}
     
     for pair in verified_pairs:
         tile_a = tiles[pair['tile_idx_a']]
         tile_b = tiles[pair['tile_idx_b']]
+        
         panel_a = tile_a['image_path']
         panel_b = tile_b['image_path']
-        pair_key = tuple(sorted([panel_a, panel_b]))
         
-        if pair_key not in panel_matches:
-            panel_matches[pair_key] = []
+        # Canonical ordering
+        if panel_a > panel_b:
+            panel_a, panel_b = panel_b, panel_a
         
-        panel_matches[pair_key].append({
-            'tile_id_a': tile_a['tile_id'],
-            'tile_id_b': tile_b['tile_id'],
-            'ssim': pair['ssim'],
-            'phash_dist': pair['phash_dist'],
-            'method': pair['method']
-        })
+        key = (panel_a, panel_b)
+        
+        if key not in panel_groups:
+            panel_groups[key] = []
+        
+        panel_groups[key].append(pair)
     
     # Build DataFrame
     rows = []
-    for (panel_a, panel_b), matches in panel_matches.items():
-        # Count Tier-A quality tiles
-        tier_a_tiles = [m for m in matches 
-                       if m['ssim'] >= config.TIER_A_SSIM and m['phash_dist'] <= config.TIER_A_PHASH]
+    for (panel_a, panel_b), matches in panel_groups.items():
+        num_tiles = len(matches)
+        avg_ssim = float(np.mean([m['ssim'] for m in matches]))
+        min_phash = int(min([m['phash_dist'] for m in matches]))
+        avg_clip = float(np.mean([m['clip_sim'] for m in matches]))
         
-        # Determine tier
-        if len(tier_a_tiles) >= config.TIER_A_MIN_TILES:
-            tier = 'A'
-        elif len(matches) >= 1:
-            tier = 'B'
-        else:
-            tier = None
+        # Tier gating
+        tier_a = (
+            (num_tiles >= config.TIER_A_MIN_TILES) and
+            (avg_ssim >= config.TIER_A_SSIM or min_phash <= config.TIER_A_PHASH)
+        )
         
-        # Best match quality
-        best_ssim = max(m['ssim'] for m in matches)
-        best_phash = min(m['phash_dist'] for m in matches)
-        
-        # Matched positions (tile IDs)
-        matched_positions = ', '.join([m['tile_id_a'].split('_')[-1] for m in tier_a_tiles[:5]])
+        tier = 'A' if tier_a else 'B'
         
         rows.append({
-            'Image_A': Path(panel_a).name,
-            'Image_B': Path(panel_b).name,
             'Path_A': panel_a,
             'Path_B': panel_b,
-            'Matched_Tiles': len(matches),
-            'Tier_A_Tiles': len(tier_a_tiles),
+            'Cosine_Similarity': avg_clip,
+            'SSIM': avg_ssim,
+            'Hamming_Distance': min_phash,
+            'Tile_Matches': num_tiles,
             'Tier': tier,
-            'Best_SSIM': best_ssim,
-            'Best_pHash': best_phash,
-            'Matched_Positions': matched_positions,
-            'Extraction_Method': 'micro',  # Always micro (NO GRID)
-            'Tier_Path': 'Tile-Micro'
+            'Extraction_Method': 'micro'
         })
     
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    
+    # Sort by tier and similarity
+    df = df.sort_values(['Tier', 'Cosine_Similarity'], ascending=[True, False])
+    
+    return df
 
 
-def run_tile_first_pipeline(panel_paths: List[str], clip_model, preprocess, device, config: TileFirstConfig = None) -> pd.DataFrame:
+def run_tile_first_pipeline(
+    panel_paths: List[str],
+    clip_model,
+    preprocess,
+    device: str,
+    config: TileFirstConfig = None
+) -> pd.DataFrame:
     """
-    Main tile-first pipeline: micro-tiles ONLY (NO GRID).
+    Memory-safe tile-first pipeline with error recovery.
     
-    1. Extract micro-tiles from all panels
-    2. Compute CLIP embeddings per tile
-    3. Find candidate tile pairs
-    4. Verify tile pairs (SSIM + pHash)
-    5. Aggregate to panel-level pairs
+    Optimized for Streamlit Cloud (1GB RAM limit):
+    - Streaming embeddings (no memory spike)
+    - Automatic tile downsampling
+    - Chunked similarity search
+    - Graceful error handling
     
-    Returns DataFrame with panel-level results.
+    Returns DataFrame with panel-level results, or empty DF on error.
     """
     if config is None:
         config = TileFirstConfig()
     
-    print("\n" + "="*70)
-    print("🔬 TILE-FIRST PIPELINE: MICRO-TILES ONLY (NO GRID DETECTION)")
-    print("="*70)
-    print(f"  Tile size: {config.MICRO_TILE_SIZE}×{config.MICRO_TILE_SIZE}")
-    print(f"  Tile overlap: {int((1-config.MICRO_TILE_STRIDE)*100)}%")
-    print(f"  CLIP threshold: {config.TILE_CLIP_MIN}")
-    print(f"  SSIM threshold: {config.TILE_SSIM_MIN}")
-    print(f"  pHash max distance: {config.TILE_PHASH_MAX}")
-    print("="*70)
-    
-    # Phase 1: Extract micro-tiles
-    print(f"\n[Phase 1] Extracting micro-tiles from {len(panel_paths)} panels...")
-    all_tiles = []
-    for panel_path in tqdm(panel_paths, desc="Extracting tiles"):
-        tiles = extract_micro_tiles(panel_path, config)
-        all_tiles.extend(tiles)
-    
-    print(f"  ✓ Extracted {len(all_tiles)} tiles from {len(panel_paths)} panels")
-    print(f"  ✓ Avg tiles per panel: {len(all_tiles) / len(panel_paths):.1f}")
-    
-    if len(all_tiles) == 0:
-        print("  ⚠️  No tiles extracted!")
-        return pd.DataFrame()
-    
-    # Phase 2: Compute CLIP embeddings
-    print(f"\n[Phase 2] Computing CLIP embeddings...")
-    tile_embeddings = compute_tile_embeddings(all_tiles, clip_model, preprocess, device)
-    print(f"  ✓ Computed {len(tile_embeddings)} embeddings")
-    
-    # Phase 3: Find candidates
-    print(f"\n[Phase 3] Finding candidate tile pairs...")
-    candidates = find_tile_candidates(all_tiles, tile_embeddings, config)
-    
-    if len(candidates) == 0:
-        print("  ⚠️  No candidates found!")
-        return pd.DataFrame()
-    
-    # Phase 4: Verify tile pairs
-    print(f"\n[Phase 4] Verifying {len(candidates)} tile pairs...")
-    verified_pairs = []
-    for tile_idx_a, tile_idx_b, clip_sim in tqdm(candidates, desc="Verifying tiles"):
-        result = verify_tile_pair(all_tiles[tile_idx_a], all_tiles[tile_idx_b], config)
-        if result['match']:
-            verified_pairs.append({
-                'tile_idx_a': tile_idx_a,
-                'tile_idx_b': tile_idx_b,
-                'clip_sim': clip_sim,
-                **result
-            })
-    
-    print(f"  ✓ Verified {len(verified_pairs)} tile matches")
-    
-    # Phase 5: Aggregate to panel pairs
-    print(f"\n[Phase 5] Aggregating to panel-level pairs...")
-    df_results = aggregate_tile_matches(all_tiles, verified_pairs, config)
-    
-    if len(df_results) > 0:
-        print(f"  ✓ Found {len(df_results)} panel pairs")
-        print(f"    • Tier A: {len(df_results[df_results['Tier'] == 'A'])}")
-        print(f"    • Tier B: {len(df_results[df_results['Tier'] == 'B'])}")
-    
-    return df_results
-
+    try:
+        print("\n" + "="*70)
+        print("🔬 TILE-FIRST PIPELINE: MEMORY-SAFE MICRO-TILES")
+        print("="*70)
+        print(f"  Tile size: {config.MICRO_TILE_SIZE}×{config.MICRO_TILE_SIZE}")
+        print(f"  Tile overlap: {int((1-config.MICRO_TILE_STRIDE)*100)}%")
+        print(f"  Max tiles: {config.MAX_TILES_TOTAL} (memory protection)")
+        print(f"  CLIP threshold: {config.TILE_CLIP_MIN}")
+        print(f"  Batch size: {config.BATCH_SIZE} (conservative)")
+        print("="*70)
+        
+        # Phase 1: Extract tiles with memory protection
+        all_tiles = extract_tiles_memory_safe(panel_paths, config)
+        
+        if not all_tiles:
+            warnings.warn("⚠️  No tiles extracted - returning empty DataFrame")
+            return pd.DataFrame()
+        
+        # Phase 2: Compute embeddings with streaming
+        try:
+            tile_embeddings = compute_tile_embeddings_streaming(
+                all_tiles, clip_model, preprocess, device,
+                batch_size=config.BATCH_SIZE
+            )
+        except RuntimeError as e:
+            if 'out of memory' in str(e).lower():
+                warnings.warn("⚠️  OOM during embedding - trying with batch_size=8")
+                if device == 'cuda':
+                    import torch
+                    torch.cuda.empty_cache()
+                gc.collect()
+                
+                tile_embeddings = compute_tile_embeddings_streaming(
+                    all_tiles, clip_model, preprocess, device,
+                    batch_size=8  # Even more conservative
+                )
+            else:
+                raise
+        
+        if len(tile_embeddings) == 0:
+            warnings.warn("⚠️  No embeddings computed - returning empty DataFrame")
+            return pd.DataFrame()
+        
+        # Phase 3: Find matches (memory-efficient)
+        candidates = find_tile_candidates_memory_safe(
+            all_tiles, tile_embeddings, config
+        )
+        
+        if len(candidates) == 0:
+            print("  ⚠️  No candidates found!")
+            return pd.DataFrame()
+        
+        # Phase 4: Verify tile pairs
+        print(f"\n  Verifying {len(candidates)} tile pairs...")
+        verified_pairs = []
+        
+        for tile_idx_a, tile_idx_b, clip_sim in tqdm(candidates, desc="Verifying tiles"):
+            result = verify_tile_pair(all_tiles[tile_idx_a], all_tiles[tile_idx_b], config)
+            if result['match']:
+                verified_pairs.append({
+                    'tile_idx_a': tile_idx_a,
+                    'tile_idx_b': tile_idx_b,
+                    'clip_sim': clip_sim,
+                    **result
+                })
+        
+        print(f"  ✓ Verified {len(verified_pairs)} tile matches")
+        
+        # Phase 5: Aggregate to panel pairs
+        print(f"\n  Aggregating to panel-level pairs...")
+        df_results = aggregate_tile_matches(all_tiles, verified_pairs, config)
+        
+        if len(df_results) > 0:
+            print(f"  ✓ Found {len(df_results)} panel pairs")
+            print(f"    • Tier A: {len(df_results[df_results['Tier'] == 'A'])}")
+            print(f"    • Tier B: {len(df_results[df_results['Tier'] == 'B'])}")
+        else:
+            print("  ⚠️  No panel pairs found after aggregation")
+        
+        print("="*70)
+        print("  ✅ TILE-FIRST PIPELINE COMPLETE")
+        print("="*70)
+        
+        return df_results
+        
+    except MemoryError as e:
+        warnings.warn(f"❌ Memory error in tile pipeline: {e}")
+        print("\n  ⚠️  TILE PIPELINE FAILED: Out of memory")
+        print("  💡 Try: Reduce --tile-size or use standard panel pipeline")
+        return pd.DataFrame()  # Return empty instead of crashing
+        
+    except Exception as e:
+        warnings.warn(f"❌ Tile pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\n  ⚠️  TILE PIPELINE FAILED")
+        print(f"  Error: {e}")
+        return pd.DataFrame()  # Graceful fallback

@@ -4676,18 +4676,53 @@ def main():
         clip_model = clip_obj.model
         preprocess = clip_obj.preprocess
         
-        # Run tile-first pipeline
-        df_merged = run_tile_first_pipeline(
-            panel_paths=[str(p) for p in panels],
-            clip_model=clip_model,
-            preprocess=preprocess,
-            device=DEVICE,
-            config=tfc
-        )
-        
-        # Save results
-        final_path = OUT_DIR / "final_merged_report.tsv"
-        df_merged.to_csv(final_path, sep="\t", index=False)
+        # Run tile-first pipeline with error handling
+        try:
+            df_merged = run_tile_first_pipeline(
+                panel_paths=[str(p) for p in panels],
+                clip_model=clip_model,
+                preprocess=preprocess,
+                device=DEVICE,
+                config=tfc
+            )
+            
+            # Save results (handle empty DataFrame gracefully - memory-safe version returns empty DF instead of crashing)
+            final_path = OUT_DIR / "final_merged_report.tsv"
+            
+            if df_merged is None or len(df_merged) == 0:
+                print("\n⚠️  TILE PIPELINE: No pairs found (or memory-safe fallback)")
+                print("   Creating empty TSV with proper headers...")
+                # Create properly formatted empty TSV
+                empty_df = pd.DataFrame(columns=[
+                    'Path_A', 'Path_B', 'Cosine_Similarity', 'SSIM', 
+                    'Hamming_Distance', 'Tile_Matches', 'Tier', 'Extraction_Method'
+                ])
+                empty_df.to_csv(final_path, sep="\t", index=False)
+            else:
+                df_merged.to_csv(final_path, sep="\t", index=False)
+                
+        except MemoryError as e:
+            print(f"\n❌ MEMORY ERROR: Tile-first pipeline ran out of memory!")
+            print(f"   This typically happens on limited-resource environments (e.g., Streamlit Cloud).")
+            print(f"   Try: Reduce tile size, increase stride, or use panel-level detection instead.")
+            # Create empty TSV with proper headers
+            final_path = OUT_DIR / "final_merged_report.tsv"
+            empty_df = pd.DataFrame(columns=['Path_A', 'Path_B', 'Cosine_Similarity', 'Tier'])
+            empty_df.to_csv(final_path, sep="\t", index=False)
+            # Don't raise - return gracefully
+            print("   Empty report saved, exiting gracefully")
+            return
+        except Exception as e:
+            print(f"\n❌ ERROR in tile-first pipeline: {e}")
+            import traceback
+            traceback.print_exc()
+            # Create empty TSV with proper headers
+            final_path = OUT_DIR / "final_merged_report.tsv"
+            empty_df = pd.DataFrame(columns=['Path_A', 'Path_B', 'Cosine_Similarity', 'Tier'])
+            empty_df.to_csv(final_path, sep="\t", index=False)
+            # Don't raise - return gracefully
+            print("   Empty report saved, exiting gracefully")
+            return
         
         print(f"\n  ✓ Final report: {final_path}")
         print(f"     Total pairs: {len(df_merged)}")
