@@ -468,11 +468,14 @@ elif page == "⚙️ Configure":
         
         with col1:
             dpi = st.slider("DPI", 100, 200, preset['dpi'], 25)
-            sim_threshold = st.slider("CLIP", 0.90, 0.99, preset['sim_threshold'], 0.01)
+            sim_threshold = st.slider("CLIP", 0.70, 0.99, preset['sim_threshold'], 0.01, 
+                                     help="Lower = more sensitive (catches compressed/modified images)")
         
         with col2:
-            phash_max_dist = st.slider("pHash", 1, 8, preset['phash_max_dist'], 1)
-            ssim_threshold = st.slider("SSIM", 0.85, 0.95, preset['ssim_threshold'], 0.01)
+            phash_max_dist = st.slider("pHash", 1, 15, preset['phash_max_dist'], 1,
+                                      help="Higher = more tolerant (catches rotated/cropped images)")
+            ssim_threshold = st.slider("SSIM", 0.50, 0.95, preset['ssim_threshold'], 0.01,
+                                      help="Lower = more sensitive (tolerates structural differences)")
         
         st.markdown("**Features**")
         col1, col2, col3 = st.columns(3)
@@ -712,6 +715,22 @@ elif page == "▶️ Run":
     
     # Debug: Log file info
     st.info(f"📄 Processing: {pdf_path.name} ({pdf_path.stat().st_size / 1024 / 1024:.1f}MB)")
+    
+    # Display actual thresholds being used
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("CLIP", f"{config['sim_threshold']:.2f}")
+    with col2:
+        st.metric("pHash", config['phash_max_dist'])
+    with col3:
+        st.metric("SSIM", f"{config['ssim_threshold']:.2f}")
+    with col4:
+        features = []
+        if config['use_phash_bundles']: features.append("Rot")
+        if config['use_orb']: features.append("ORB")
+        if config['use_tier_gating']: features.append("Tier")
+        st.metric("Features", "+".join(features) if features else "None")
+    
     print(f"DEBUG: PDF path: {pdf_path.absolute()}")
     print(f"DEBUG: PDF exists: {pdf_path.exists()}")
     print(f"DEBUG: PDF readable: {os.access(pdf_path, os.R_OK)}")
