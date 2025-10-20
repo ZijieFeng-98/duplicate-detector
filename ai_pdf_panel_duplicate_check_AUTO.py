@@ -4882,6 +4882,15 @@ def main():
             print(f"  Using universal tier gating (Option 1: Simple)...")
             df_merged = apply_tier_gating(df_merged, modality_cache=None)
         
+        # ═══ DOCUMENT 54 IMPROVEMENTS ═══
+        # Apply conditional SSIM gate + enhanced filtering
+        try:
+            from doc54_improvements import apply_doc54_tier_improvements
+            df_merged = apply_doc54_tier_improvements(df_merged)
+        except Exception as e:
+            print(f"  ⚠️  Warning: Could not apply Document 54 improvements: {e}")
+            print(f"     Continuing with standard tier gating...")
+        
         stage_counts['tier_a'] = len(df_merged[df_merged.get('Tier') == 'A'])
         stage_counts['tier_b'] = len(df_merged[df_merged.get('Tier') == 'B'])
         

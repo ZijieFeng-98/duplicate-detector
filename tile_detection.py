@@ -25,24 +25,27 @@ class TileConfig:
     ENABLE_TILE_MODE = False  # Toggle in main script
     ENABLE_TILE_DEBUG = False
     
-    # Tile extraction
-    TILE_MIN_GRID_CELLS = 4
-    TILE_MAX_GRID_CELLS = 20
-    TILE_PROJECTION_VALLEY_DEPTH = 18
+    # Tile extraction (✅ OPTIMIZED FOR SMALL CONFOCAL PANELS)
+    TILE_MIN_GRID_CELLS = 2          # Lowered from 4
+    TILE_MAX_GRID_CELLS = 30         # Increased from 20
+    TILE_PROJECTION_VALLEY_DEPTH = 10  # Relaxed from 18
     TILE_MIN_SEPARATOR_WIDTH = 5
-    TILE_SIZE = 384
-    TILE_STRIDE_RATIO = 0.65
+    TILE_SIZE = 256                  # ✅ Reduced from 384 to fit 271px panels
+    TILE_STRIDE_RATIO = 0.70         # More overlap (was 0.65)
     TILE_MIN_AREA = 9000
     TILE_MAX_TILES_PER_PANEL = 20
+    
+    # NEW: Force micro-tiles for confocal (bypass grid detection)
+    FORCE_MICRO_TILES_FOR_CONFOCAL = True
     
     # Candidate generation
     TILE_CLIP_MIN = 0.96
     TILE_TOPK = 50
     
-    # Verification thresholds
-    TILE_CONFOCAL_SSIM_MIN = 0.92
-    TILE_CONFOCAL_NCC_MIN = 0.990
-    TILE_CONFOCAL_PHASH_MAX = 5
+    # Verification thresholds (✅ RELAXED FOR CONFOCAL)
+    TILE_CONFOCAL_SSIM_MIN = 0.88     # Was 0.92
+    TILE_CONFOCAL_NCC_MIN = 0.985     # Was 0.990
+    TILE_CONFOCAL_PHASH_MAX = 6       # Was 5 (allow slight rotation tolerance)
     
     TILE_IHC_SSIM_MIN = 0.90
     TILE_IHC_NCC_MIN = 0.985
@@ -52,9 +55,9 @@ class TileConfig:
     
     TILE_ECC_MAX_STEPS = 120
     
-    # Integration policy
+    # Integration policy (✅ REQUIRE MULTIPLE TILES FOR HIGH CONFIDENCE)
     REQUIRE_TILE_EVIDENCE_FOR_CONFOCAL = True
-    MIN_VERIFIED_TILES_FOR_TIER_A = 1
+    MIN_VERIFIED_TILES_FOR_TIER_A = 2  # Increased from 1
     DEMOTE_GRID_WITHOUT_TILE = True
 
 # ═══════════════════════════════════════════════════════════════
@@ -148,6 +151,14 @@ def _micro_tiles(img_bgr: np.ndarray, config: TileConfig) -> List[Tuple[int,int,
     """Create overlapping square tiles with optional edge coverage"""
     h, w = img_bgr.shape[:2]
     size = config.TILE_SIZE
+    
+    # ✅ Adapt tile size if image is too small
+    if h < size or w < size:
+        size = min(h, w, 256)  # Use smaller tile (min 256px)
+        if size < 128:  # Too small to be useful
+            return []
+        print(f"  [Adapt] Tile size reduced to {size}px to fit {h}×{w} panel")
+    
     stride = max(8, int(size * config.TILE_STRIDE_RATIO))
     tiles = []
     for y in range(0, max(1, h - size + 1), stride):
@@ -175,6 +186,27 @@ def extract_tiles_from_panel(panel_path: str, page: int, modality: str, config: 
         return []
     
     panel_id = Path(panel_path).stem
+    
+    # ✅ NEW: Force micro-tiles for confocal (skip grid detection)
+    if modality == 'confocal' and config.FORCE_MICRO_TILES_FOR_CONFOCAL:
+        if config.ENABLE_TILE_DEBUG:
+            print(f"  [Confocal] Forcing micro-tiles (bypassing grid detection)")
+        micro = _micro_tiles(img, config)
+        tiles = []
+        for idx, (x, y, w, h) in enumerate(micro):
+            tile = Tile(
+                tile_id=f"{panel_id}_micro_{idx}",
+                panel_path=panel_path,
+                page=page,
+                row=-1,  # -1 indicates micro-tile
+                col=-1,
+                bbox=(x, y, w, h),
+                modality=modality
+            )
+            tiles.append(tile)
+        return tiles
+    
+    # Original grid detection logic for non-confocal...
     grid_cells = _detect_grid_cells(img, config)
     tiles = []
     
@@ -445,19 +477,25 @@ def run_tile_detection_pipeline(panel_paths: List[str],
     
     print(f"  Checking {len(panel_pairs)} panel pairs for tile matches...")
     
-    for pa, pb in tqdm(panel_pairs[:100], desc="Tile verification"):  # Limit for speed
+    # ✅ Check ALL pairs (removed [:100] limit)
+    for pa, pb in tqdm(panel_pairs, desc="Tile verification"):
         tiles_a = panel_tiles.get(pa, [])
         tiles_b = panel_tiles.get(pb, [])
         
+        # ✅ Count ALL matching tiles (no short-circuit)
+        pair_matches = []
         for tile_a in tiles_a:
             for tile_b in tiles_b:
                 match = verify_tile_pair(tile_a, tile_b, config)
                 if match is not None:
-                    verified_matches.append(match)
-                    # Short-circuit after finding first match per panel pair
-                    break
-            if len(verified_matches) > 0 and verified_matches[-1].tile_a.panel_path == pa:
-                break
+                    pair_matches.append(match)
+        
+        # Add all matches for this pair
+        verified_matches.extend(pair_matches)
+        
+        # Optional: Log multi-tile evidence
+        if len(pair_matches) > 0 and config.ENABLE_TILE_DEBUG:
+            print(f"    {Path(pa).name} ↔ {Path(pb).name}: {len(pair_matches)} tile matches")
     
     print(f"  ✓ Found {len(verified_matches)} tile matches")
     
@@ -500,7 +538,7 @@ def apply_tile_evidence_to_dataframe(df, tile_matches: List[TileMatch], config: 
             best = max(matches, key=lambda m: m.confidence)
             df.at[idx, 'Tile_Best_Path'] = best.method
     
-    # Apply promotion/demotion
+    # Apply promotion/demotion (✅ REQUIRE MULTIPLE TILES FOR HIGH CONFIDENCE)
     original_tier_a = len(df[df['Tier'] == 'A'])
     
     for idx, row in df.iterrows():
@@ -509,18 +547,28 @@ def apply_tile_evidence_to_dataframe(df, tile_matches: List[TileMatch], config: 
         
         mod_a = row.get('Modality_A', 'unknown')
         mod_b = row.get('Modality_B', 'unknown')
+        tile_count = row.get('Tile_Evidence_Count', 0)
         
         # Require tile evidence for confocal
         if config.REQUIRE_TILE_EVIDENCE_FOR_CONFOCAL and mod_a == 'confocal' and mod_b == 'confocal':
-            if row['Tier'] == 'A' and not row['Tile_Evidence']:
+            # ✅ Promote to Tier-A if ≥MIN_VERIFIED_TILES_FOR_TIER_A tiles match
+            if tile_count >= config.MIN_VERIFIED_TILES_FOR_TIER_A and row.get('Tier') != 'A':
+                df.at[idx, 'Tier'] = 'A'
+                df.at[idx, 'Tier_Path'] = f'Multi-Tile-Confirmed-{tile_count}'
+            
+            # ✅ Demote from Tier-A if insufficient tile evidence
+            if row['Tier'] == 'A' and tile_count < config.MIN_VERIFIED_TILES_FOR_TIER_A:
                 # Check if it's already protected by exact/ORB/DeepVerify
                 tier_path = row.get('Tier_Path', '')
                 if tier_path not in ['Exact', 'ORB', 'Confocal-DeepVerify', 'IHC-DeepVerify']:
                     df.at[idx, 'Tier'] = 'B'
-                    df.at[idx, 'Tier_Path'] = 'Confocal-NeedsTileEvidence'
+                    df.at[idx, 'Tier_Path'] = f'Confocal-NeedsTileEvidence-{tile_count}'
     
     new_tier_a = len(df[df['Tier'] == 'A'])
+    promoted = len(df[df['Tier_Path'].astype(str).str.contains('Multi-Tile-Confirmed', na=False)])
     print(f"  ✓ Tier A: {original_tier_a} → {new_tier_a} ({new_tier_a - original_tier_a:+d})")
+    if promoted > 0:
+        print(f"    ↑ {promoted} pairs promoted via multi-tile evidence")
     
     return df
 
