@@ -7,7 +7,7 @@ cd "/Users/zijiefeng/Desktop/Guo's lab/APP/Streamlit_Duplicate_Detector"
 source venv/bin/activate
 
 # Kill any existing streamlit processes
-pkill -f "streamlit run streamlit_app.py" 2>/dev/null
+pkill -f "streamlit run src/streamlit_app.py" 2>/dev/null
 
 echo "🚀 Starting Streamlit Duplicate Detector..."
 echo "📍 URL: http://localhost:8501"
@@ -16,7 +16,7 @@ echo ""
 
 # Run streamlit and auto-restart if it crashes
 while true; do
-    streamlit run streamlit_app.py --server.port 8501 --server.headless true
+    streamlit run src/streamlit_app.py --server.port 8501 --server.headless true
     EXIT_CODE=$?
     
     if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 130 ]; then

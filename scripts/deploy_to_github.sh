@@ -49,7 +49,7 @@ if [ $? -eq 0 ]; then
     echo "   1. Go to: https://share.streamlit.io/"
     echo "   2. Click 'New app'"
     echo "   3. Select your repository: ${REPO_URL%.git}"
-    echo "   4. Main file: streamlit_app.py"
+    echo "   4. Main file: src/streamlit_app.py"
     echo "   5. Click 'Deploy!'"
     echo ""
     echo "════════════════════════════════════════════════════════════════════"

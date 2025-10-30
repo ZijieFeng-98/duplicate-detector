@@ -16,10 +16,25 @@ import traceback
 # TEST CONFIGURATION
 # ============================================================================
 
-# Your test data path
-TEST_PDF_PATH = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/PUA-STM-Combined Figures .pdf")
+# Test PDF path - use environment variable or relative path
+# For CI/CD: Set TEST_PDF_PATH environment variable
+# For local: Place test PDF in tests/data/ directory or set TEST_PDF_PATH env var
+import os
+TEST_PDF_ENV = os.environ.get("TEST_PDF_PATH")
+if TEST_PDF_ENV:
+    TEST_PDF_PATH = Path(TEST_PDF_ENV)
+elif Path("tests/data").exists():
+    # Look for PDF files in tests/data/
+    test_pdfs = list(Path("tests/data").glob("*.pdf"))
+    if test_pdfs:
+        TEST_PDF_PATH = test_pdfs[0]
+    else:
+        TEST_PDF_PATH = None
+else:
+    TEST_PDF_PATH = None
+
 TEST_OUTPUT_DIR = Path("./test_output")
-MAIN_SCRIPT = Path("./ai_pdf_panel_duplicate_check_AUTO.py")
+MAIN_SCRIPT = Path("src/ai_pdf_panel_duplicate_check_AUTO.py")
 
 # Expected thresholds (adjust based on your requirements)
 MIN_PAGES_EXPECTED = 1
@@ -146,12 +161,24 @@ def test_prerequisites(logger):
     # Check main script exists
     if not MAIN_SCRIPT.exists():
         logger.failure(f"Main script not found: {MAIN_SCRIPT}")
+        logger.info(f"💡 Expected location: {MAIN_SCRIPT.absolute()}")
+        logger.info(f"💡 Current working directory: {Path.cwd()}")
         return False
     logger.success(f"Found main script: {MAIN_SCRIPT}")
     
     # Check test PDF exists
+    if TEST_PDF_PATH is None:
+        logger.failure("Test PDF path not specified!")
+        logger.info("💡 Options:")
+        logger.info("   1. Set TEST_PDF_PATH environment variable:")
+        logger.info("      export TEST_PDF_PATH=/path/to/test.pdf")
+        logger.info("   2. Place test PDF in tests/data/ directory")
+        logger.info("   3. Update TEST_PDF_PATH in test_pipeline_auto.py (not recommended)")
+        return False
+    
     if not TEST_PDF_PATH.exists():
         logger.failure(f"Test PDF not found: {TEST_PDF_PATH}")
+        logger.info(f"💡 Path resolved to: {TEST_PDF_PATH.absolute()}")
         return False
     logger.success(f"Found test PDF: {TEST_PDF_PATH.name}")
     
@@ -691,8 +718,9 @@ def run_all_tests():
         return logger.summary()
     
     # Check test PDF exists
-    if not TEST_PDF_PATH.exists():
+    if TEST_PDF_PATH is None or not TEST_PDF_PATH.exists():
         logger.failure(f"Test PDF not found: {TEST_PDF_PATH}")
+        logger.info("💡 Set TEST_PDF_PATH environment variable or place PDF in tests/data/")
         return logger.summary()
     
     # Test 9: sklearn import (deployment fix)

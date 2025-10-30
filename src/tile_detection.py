@@ -24,6 +24,7 @@ class TileConfig:
     # Feature flags
     ENABLE_TILE_MODE = False  # Toggle in main script
     ENABLE_TILE_DEBUG = False
+    ALLOW_SAME_PAGE_TILES = False  # Allow tile verification for same-page pairs (for figure grids)
     
     # Tile extraction (✅ OPTIMIZED FOR SMALL CONFOCAL PANELS)
     TILE_MIN_GRID_CELLS = 2          # Lowered from 4
@@ -461,8 +462,8 @@ def run_tile_detection_pipeline(panel_paths: List[str],
             page_a = page_map.get(pa, 0)
             page_b = page_map.get(pb, 0)
             
-            # Skip same page
-            if page_a == page_b:
+            # Skip same page unless explicitly allowed (for figure grids)
+            if page_a == page_b and not config.ALLOW_SAME_PAGE_TILES:
                 continue
             
             # Only check same modality
@@ -475,7 +476,10 @@ def run_tile_detection_pipeline(panel_paths: List[str],
             
             panel_pairs.append((pa, pb))
     
-    print(f"  Checking {len(panel_pairs)} panel pairs for tile matches...")
+    if config.ALLOW_SAME_PAGE_TILES:
+        print(f"  Checking {len(panel_pairs)} panel pairs for tile matches (including same-page)...")
+    else:
+        print(f"  Checking {len(panel_pairs)} panel pairs for tile matches (cross-page only)...")
     
     # ✅ Check ALL pairs (removed [:100] limit)
     for pa, pb in tqdm(panel_pairs, desc="Tile verification"):

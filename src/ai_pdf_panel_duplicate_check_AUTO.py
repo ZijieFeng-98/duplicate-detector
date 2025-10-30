@@ -37,8 +37,10 @@ except ImportError:
     TILE_FIRST_AVAILABLE = False
 
 # --- CONFIG -------------------------------------------------------------------
-PDF_PATH = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/STM-Combined Figures.pdf")
-OUT_DIR  = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/ai_clip_output")
+# Paths must be provided via CLI args (--pdf, --output) or Streamlit UI
+# No hardcoded paths for portability - this ensures the app works on any machine
+PDF_PATH = None  # Must be set via --pdf CLI argument or Streamlit upload
+OUT_DIR = None   # Must be set via --output CLI argument or Streamlit config
 
 # PDF conversion
 DPI = 150
@@ -3033,10 +3035,25 @@ def get_device():
 DEVICE = get_device()
 
 # --- UTILS --------------------------------------------------------------------
-def ensure_dir(p: Path):
+def ensure_dir(p: Path) -> None:
+    """
+    Ensure a directory exists, creating parent directories if needed.
+    
+    Args:
+        p: Path to the directory to create
+    """
     p.mkdir(parents=True, exist_ok=True)
 
 def page_stem(i: int) -> str:
+    """
+    Generate a page filename stem from a 0-indexed page number.
+    
+    Args:
+        i: 0-indexed page number
+        
+    Returns:
+        Page filename stem (e.g., "page_1" for i=0)
+    """
     return f"page_{i+1}"
 
 def same_page(pair_a: str, pair_b: str, meta_df: pd.DataFrame) -> bool:
@@ -4589,6 +4606,41 @@ def main():
     COMPLETE PIPELINE with progressive gating and all advanced features
     """
     start_time = time.time()
+    
+    # ═══ VALIDATE REQUIRED PATHS ═══
+    if PDF_PATH is None:
+        print("\n" + "="*70)
+        print("❌ ERROR: PDF path not specified!")
+        print("="*70)
+        print("\n💡 This script requires a PDF file path.")
+        print("\n   Usage options:")
+        print("   1. Command-line: python ai_pdf_panel_duplicate_check_AUTO.py --pdf <path> --output <dir>")
+        print("   2. Streamlit UI: Upload PDF via streamlit_app.py")
+        print("\n   No hardcoded paths are allowed for portability.")
+        print("="*70)
+        sys.exit(1)
+    
+    if OUT_DIR is None:
+        print("\n" + "="*70)
+        print("❌ ERROR: Output directory not specified!")
+        print("="*70)
+        print("\n💡 This script requires an output directory.")
+        print("\n   Usage options:")
+        print("   1. Command-line: python ai_pdf_panel_duplicate_check_AUTO.py --pdf <path> --output <dir>")
+        print("   2. Streamlit UI: Output directory is set automatically")
+        print("\n   No hardcoded paths are allowed for portability.")
+        print("="*70)
+        sys.exit(1)
+    
+    # Convert to Path objects if strings were provided
+    PDF_PATH_parsed = Path(PDF_PATH)
+    OUT_DIR_parsed = Path(OUT_DIR)
+    
+    # Reassign globals so rest of code continues to work
+    global PDF_PATH, OUT_DIR
+    PDF_PATH = PDF_PATH_parsed
+    OUT_DIR = OUT_DIR_parsed
+    
     ensure_dir(OUT_DIR)
     cache_dir = OUT_DIR / "cache"
     ensure_dir(cache_dir)

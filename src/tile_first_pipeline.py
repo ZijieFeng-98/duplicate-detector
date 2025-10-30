@@ -98,9 +98,9 @@ def extract_tiles_memory_safe(panel_paths: List[str], config: TileFirstConfig) -
     """
     Extract tiles with memory protection for Streamlit Cloud.
     
-    - Limits total tiles to MAX_TILES_TOTAL
-    - Auto-adjusts stride if needed
-    - Random sampling if still too many
+    - Extracts tiles from ALL panels for fair coverage
+    - Limits total tiles to MAX_TILES_TOTAL using fair sampling
+    - Shuffles before sampling to ensure uniform distribution across panels
     """
     all_tiles = []
     tiles_per_panel = []
@@ -108,35 +108,35 @@ def extract_tiles_memory_safe(panel_paths: List[str], config: TileFirstConfig) -
     print(f"\n  Extracting micro-tiles (memory-safe mode)...")
     print(f"  Max tiles: {config.MAX_TILES_TOTAL}")
     
-    # First pass: extract from all panels
+    # Extract tiles from ALL panels (no early break - ensures fair coverage)
     for panel_path in tqdm(panel_paths, desc="Extracting tiles"):
         tiles = extract_micro_tiles(panel_path, config)
         tiles_per_panel.append(len(tiles))
         all_tiles.extend(tiles)
-        
-        # Early exit if approaching limit
-        if config.MEMORY_SAFE_MODE and len(all_tiles) > config.MAX_TILES_TOTAL * 1.5:
-            warnings.warn(
-                f"⚠️  Tile count ({len(all_tiles)}) exceeds safe limit. "
-                f"Stopping early to conserve memory."
-            )
-            break
     
-    # If too many tiles, downsample
+    # If too many tiles, use fair sampling (shuffle then sample)
     if len(all_tiles) > config.MAX_TILES_TOTAL:
         import random
-        random.seed(42)  # Deterministic
+        random.seed(42)  # Deterministic for reproducibility
         
         original_count = len(all_tiles)
-        all_tiles = random.sample(all_tiles, config.MAX_TILES_TOTAL)
+        
+        # Shuffle to ensure fair distribution across all panels
+        # This prevents bias toward early panels
+        random.shuffle(all_tiles)
+        
+        # Sample uniformly from shuffled list
+        all_tiles = all_tiles[:config.MAX_TILES_TOTAL]
         
         warnings.warn(
-            f"⚠️  Downsampled {original_count} → {len(all_tiles)} tiles for memory safety"
+            f"⚠️  Downsampled {original_count} → {len(all_tiles)} tiles for memory safety "
+            f"(shuffled for fair panel coverage)"
         )
     
     print(f"  ✓ Extracted {len(all_tiles)} tiles from {len(panel_paths)} panels")
     if tiles_per_panel:
         print(f"    Avg tiles/panel: {np.mean(tiles_per_panel):.1f}")
+        print(f"    Coverage: {len(panel_paths)} panels processed (no early break)")
     
     return all_tiles
 

@@ -731,10 +731,6 @@ elif page == "▶️ Run":
         if config['use_tier_gating']: features.append("Tier")
         st.metric("Features", "+".join(features) if features else "None")
     
-    print(f"DEBUG: PDF path: {pdf_path.absolute()}")
-    print(f"DEBUG: PDF exists: {pdf_path.exists()}")
-    print(f"DEBUG: PDF readable: {os.access(pdf_path, os.R_OK)}")
-    
     if config['use_phash_bundles']:
         cmd.append("--use-phash-bundles")
     if config['use_orb']:
