@@ -503,16 +503,19 @@ elif page == "⚙️ Configure":
     with col1:
         if st.button(f"⚡ Fast\n{presets['fast']['time']}", use_container_width=True):
             st.session_state.preset = presets['fast']
+            st.session_state.run_completed = False  # Reset run state when config changes
             st.rerun()
     
     with col2:
         if st.button(f"🎯 Balanced\n{presets['balanced']['time']}", use_container_width=True, type="primary"):
             st.session_state.preset = presets['balanced']
+            st.session_state.run_completed = False  # Reset run state when config changes
             st.rerun()
     
     with col3:
         if st.button(f"🔬 Thorough\n{presets['thorough']['time']}", use_container_width=True):
             st.session_state.preset = presets['thorough']
+            st.session_state.run_completed = False  # Reset run state when config changes
             st.rerun()
     
     st.markdown("---")
@@ -710,6 +713,27 @@ elif page == "▶️ Run":
         if st.button("← Back"):
             st.session_state.current_page = "⚙️ Configure"
             st.rerun()
+        st.stop()
+    
+    # Check if we already ran - if so, just show the logs and results
+    if 'run_completed' in st.session_state and st.session_state.run_completed:
+        st.info("✅ Analysis already completed. Showing previous logs.")
+        
+        # Show stored logs
+        if 'run_logs' in st.session_state and st.session_state.run_logs:
+            with st.expander("📋 Detailed Logs", expanded=True):
+                st.code("\n".join(st.session_state.run_logs), language="text")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("👀 View Results", use_container_width=True, type="primary"):
+                st.session_state.current_page = "📊 Results"
+                st.rerun()
+        with col2:
+            if st.button("🔄 Run Again", use_container_width=True):
+                st.session_state.run_completed = False
+                st.session_state.processing_complete = False
+                st.rerun()
         st.stop()
     
     config = st.session_state.config
@@ -948,6 +972,7 @@ elif page == "▶️ Run":
             
             st.session_state.results = results
             st.session_state.processing_complete = True
+            st.session_state.run_completed = True  # Mark as completed
             
             st.balloons()
             st.success(f"✅ Found {results['total_pairs']} pairs in {elapsed:.1f}s")
@@ -956,6 +981,7 @@ elif page == "▶️ Run":
             st.session_state.current_page = "📊 Results"
             st.rerun()
         else:
+            st.session_state.run_completed = True  # Mark as completed even if failed
             st.error(f"❌ Analysis failed (exit code {return_code})")
             st.info("Check logs above for details")
             

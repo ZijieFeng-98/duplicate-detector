@@ -13,6 +13,7 @@ Key Features:
 
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Callable
+from itertools import combinations
 import numpy as np
 import pandas as pd
 import cv2
@@ -50,6 +51,149 @@ class TileFirstConfig:
     TIER_A_MIN_TILES = 2           # Min matching tiles for Tier A
     TIER_A_SSIM = 0.95             # SSIM for Tier A tile
     TIER_A_PHASH = 3               # pHash for Tier A tile
+
+
+def detect_confocal_grid(image_path: str, max_dim: int = 768) -> Dict[str, float]:
+    """Detect repetitive confocal grids using FFT energy analysis."""
+
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return {
+                'is_confocal': False,
+                'grid_energy': 0.0,
+                'dominant_spacing': 0.0
+            }
+
+        h, w = img.shape[:2]
+        if max(h, w) > max_dim:
+            scale = max_dim / float(max(h, w))
+            new_size = (max(8, int(w * scale)), max(8, int(h * scale)))
+            img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+
+        img = img.astype(np.float32)
+        img -= img.mean()
+        std = img.std() + 1e-6
+        if std < 1e-3:
+            return {
+                'is_confocal': False,
+                'grid_energy': 0.0,
+                'dominant_spacing': 0.0
+            }
+
+        freq = np.fft.fft2(img)
+        freq_shift = np.fft.fftshift(freq)
+        magnitude = np.abs(freq_shift)
+
+        # Remove central DC component
+        cy, cx = magnitude.shape[0] // 2, magnitude.shape[1] // 2
+        guard = max(3, int(0.02 * max(magnitude.shape)))
+        magnitude[cy-guard:cy+guard+1, cx-guard:cx+guard+1] = 0
+
+        horiz_profile = magnitude.mean(axis=0)
+        vert_profile = magnitude.mean(axis=1)
+
+        def _peak_energy(profile: np.ndarray) -> Tuple[float, float]:
+            if profile.size == 0:
+                return 0.0, 0.0
+            center = profile.size // 2
+            dead_zone = max(2, int(profile.size * 0.05))
+            mask = np.ones_like(profile, dtype=bool)
+            mask[max(0, center - dead_zone):min(profile.size, center + dead_zone + 1)] = False
+            filtered = profile[mask]
+            if filtered.size == 0:
+                return 0.0, 0.0
+
+            topk = np.sort(filtered)[-6:]
+            energy = float(np.sum(topk)) / (float(np.sum(np.abs(filtered))) + 1e-6)
+
+            # Dominant spacing from largest positive-frequency peak
+            positive = profile[center + dead_zone + 1:]
+            if positive.size == 0:
+                spacing = 0.0
+            else:
+                dominant_idx = int(np.argmax(positive)) + dead_zone + 1
+                spacing = dominant_idx / max(profile.size, 1)
+
+            return energy, spacing
+
+        horiz_energy, horiz_spacing = _peak_energy(horiz_profile)
+        vert_energy, vert_spacing = _peak_energy(vert_profile)
+
+        grid_energy = float(max(horiz_energy, vert_energy))
+        dominant_spacing = float(max(horiz_spacing, vert_spacing))
+
+        is_confocal = grid_energy >= 0.08 and dominant_spacing > 0
+
+        return {
+            'is_confocal': bool(is_confocal),
+            'grid_energy': grid_energy,
+            'dominant_spacing': dominant_spacing
+        }
+
+    except Exception:
+        return {
+            'is_confocal': False,
+            'grid_energy': 0.0,
+            'dominant_spacing': 0.0
+        }
+
+
+def compute_color_histogram(image_path: str, bins: int = 32) -> np.ndarray:
+    """Compute normalized color histogram for fluorophore spectrum comparison."""
+
+    img = cv2.imread(image_path)
+    if img is None:
+        return np.zeros(bins * 3, dtype=np.float32)
+
+    hist_parts = []
+    for ch in range(3):
+        hist = cv2.calcHist([img], [ch], None, [bins], [0, 256])
+        hist_parts.append(hist.flatten())
+
+    hist_vec = np.concatenate(hist_parts).astype(np.float32)
+    total = hist_vec.sum()
+    if total <= 0:
+        return np.zeros_like(hist_vec)
+
+    return hist_vec / total
+
+
+def compute_multiscale_ssim(gray_a: np.ndarray, gray_b: np.ndarray, levels: int = 3) -> float:
+    """Approximate multi-scale SSIM by averaging SSIM across downsampled scales."""
+
+    from skimage.metrics import structural_similarity as ssim
+
+    try:
+        scores = []
+        current_a = gray_a.astype(np.float32)
+        current_b = gray_b.astype(np.float32)
+
+        for level in range(levels):
+            if current_a.shape[0] < 32 or current_a.shape[1] < 32:
+                break
+
+            score = ssim(current_a, current_b, data_range=255)
+            scores.append(score)
+
+            if level == levels - 1:
+                break
+
+            new_w = max(16, current_a.shape[1] // 2)
+            new_h = max(16, current_a.shape[0] // 2)
+            if new_h == current_a.shape[0] and new_w == current_a.shape[1]:
+                break
+
+            current_a = cv2.resize(current_a, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            current_b = cv2.resize(current_b, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        if not scores:
+            return 0.0
+
+        return float(np.mean(scores))
+
+    except Exception:
+        return 0.0
 
 
 def extract_micro_tiles(image_path: str, config: TileFirstConfig) -> List[Dict]:

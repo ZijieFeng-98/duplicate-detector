@@ -1,0 +1,101 @@
+# Duplicate Detector Configuration File
+# Example YAML configuration
+
+# PDF settings
+dpi: 150
+pdf_path: null  # Set via environment variable or CLI argument
+output_dir: null  # Defaults to ./duplicate_detector_output
+
+# Panel detection
+panel_detection:
+  min_panel_area: 80000
+  max_panel_area: 10000000
+  min_aspect_ratio: 0.2
+  max_aspect_ratio: 5.0
+  edge_threshold1: 40
+  edge_threshold2: 120
+  contour_approx_epsilon: 0.02
+  caption_pages: []  # Page numbers (1-indexed) to exclude
+
+# Duplicate detection thresholds
+duplicate_detection:
+  sim_threshold: 0.96
+  phash_max_dist: 4
+  ssim_threshold: 0.90
+  top_k_neighbors: 50
+  clip_pairing_mode: "thresh"
+  clip_max_output_pairs: 120000
+
+# Advanced discrimination
+advanced_discrimination:
+  use_clip_zscore: true
+  clip_zscore_min: 3.0
+  require_clip_z_for_clip_ssim: true
+  use_patchwise_ssim: true
+  ssim_grid_h: 3
+  ssim_grid_w: 3
+  ssim_topk_patches: 4
+  ssim_mix_weight: 0.6
+  ssim_patch_min_gate: 0.85
+  require_patch_min_for_clip_ssim: true
+  tier_a_copypaste_clip_min: 0.95
+  tier_a_copypaste_ssim_min: 0.65
+  tier_a_copypaste_combined: 1.65
+
+# Tier classification
+tier_classification:
+  tier_a_phash_rt: 3
+  tier_a_clip: 0.99
+  tier_a_ssim: 0.95
+  tier_a_orb_inliers: 30
+  tier_a_orb_ratio: 0.30
+  tier_a_orb_error: 4.0
+  tier_a_orb_coverage: 0.85
+  tier_a_clone_area_pct: 1.0
+  tier_b_phash_rt_min: 4
+  tier_b_phash_rt_max: 5
+  tier_b_clip_min: 0.985
+  tier_b_clip_max: 0.99
+  tier_b_ssim_min: 0.92
+  tier_b_ssim_max: 0.95
+  tier_a_relaxed_clip: 0.94
+  tier_a_relaxed_ssim: 0.65
+  tier_a_relaxed_combined: 1.62
+  tier_a_western_clip: 0.95
+  tier_a_western_ssim: 0.65
+  tier_a_western_combined: 1.6
+  confocal_fp_clip_min: 0.96
+  confocal_fp_ssim_max: 0.6
+  confocal_fp_phash_min: 10
+
+# Feature flags
+feature_flags:
+  use_phash_bundles: true
+  use_orb_ransac: true
+  use_tier_gating: true
+  use_ssim_validation: true
+  highlight_differences: true
+  use_modality_specific_gating: false
+  enable_modality_detection: false
+  enable_modality_routing: true
+  expose_modality_columns: false
+  enable_figcheck_heuristics: false
+  enable_orb_relax: false
+  enable_confocal_deep_verify: true
+  enable_ihc_deep_verify: true
+  enable_text_masking: true
+  enable_cache: true
+  debug_mode: false
+
+# Performance settings
+performance:
+  batch_size: 64
+  num_workers: null  # null = auto-detect
+  enable_mps: true
+  cache_version: "v7"
+  random_seed: 123
+
+# UX settings
+auto_open_results: true
+auto_open_per_pair: false
+
