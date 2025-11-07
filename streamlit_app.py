@@ -51,6 +51,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
+# CONFIGURATION SYSTEM INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+try:
+    from duplicate_detector.models.config import DetectorConfig
+    CONFIG_SYSTEM_AVAILABLE = True
+except ImportError:
+    CONFIG_SYSTEM_AVAILABLE = False
+    st.warning("⚠️ Config system not available, using legacy presets")
+
+# ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 TEMP_DIR = Path(tempfile.gettempdir()) / "duplicate_detector"
@@ -398,47 +408,97 @@ elif page == "⚙️ Configure":
     st.info("**📊 Test Results (14 known duplicates):** Balanced = 100% detect + 9 FPs | Thorough = 78% detect + 0 FPs | Fast = 100% detect + 25 FPs")
     col1, col2, col3 = st.columns(3)
     
-    presets = {
-        'fast': {
-            'dpi': 100,
-            'sim_threshold': 0.97,
-            'phash_max_dist': 3,
-            'ssim_threshold': 0.92,
-            'use_phash_bundles': True,
-            'use_orb': False,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Fast',
-            'time': '~2 min',
-            'desc': '25+ false positives'
-        },
-        'balanced': {
-            'dpi': 150,
-            'sim_threshold': 0.96,
-            'phash_max_dist': 4,
-            'ssim_threshold': 0.90,
-            'use_phash_bundles': True,
-            'use_orb': True,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Balanced ⭐',
-            'time': '~5 min',
-            'desc': '~9 false positives'
-        },
-        'thorough': {
-            'dpi': 200,
-            'sim_threshold': 0.94,
-            'phash_max_dist': 5,
-            'ssim_threshold': 0.88,
-            'use_phash_bundles': True,
-            'use_orb': True,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Thorough',
-            'time': '~8 min',
-            'desc': '0 false positives'
+    # Load presets from config system or use legacy
+    if CONFIG_SYSTEM_AVAILABLE:
+        # Use config system presets
+        fast_config = DetectorConfig.from_preset("fast")
+        balanced_config = DetectorConfig.from_preset("balanced")
+        thorough_config = DetectorConfig.from_preset("thorough")
+        
+        presets = {
+            'fast': {
+                'dpi': fast_config.dpi,
+                'sim_threshold': fast_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': fast_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': fast_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': fast_config.feature_flags.use_phash_bundles,
+                'use_orb': fast_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': fast_config.feature_flags.use_tier_gating,
+                'batch_size': fast_config.performance.batch_size,
+                'name': 'Fast',
+                'time': '~2 min',
+                'desc': '25+ false positives'
+            },
+            'balanced': {
+                'dpi': balanced_config.dpi,
+                'sim_threshold': balanced_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': balanced_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': balanced_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': balanced_config.feature_flags.use_phash_bundles,
+                'use_orb': balanced_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': balanced_config.feature_flags.use_tier_gating,
+                'batch_size': balanced_config.performance.batch_size,
+                'name': 'Balanced ⭐',
+                'time': '~5 min',
+                'desc': '~9 false positives'
+            },
+            'thorough': {
+                'dpi': thorough_config.dpi,
+                'sim_threshold': thorough_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': thorough_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': thorough_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': thorough_config.feature_flags.use_phash_bundles,
+                'use_orb': thorough_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': thorough_config.feature_flags.use_tier_gating,
+                'batch_size': thorough_config.performance.batch_size,
+                'name': 'Thorough',
+                'time': '~8 min',
+                'desc': '0 false positives'
+            }
         }
-    }
+    else:
+        # Legacy presets (fallback)
+        presets = {
+            'fast': {
+                'dpi': 100,
+                'sim_threshold': 0.97,
+                'phash_max_dist': 3,
+                'ssim_threshold': 0.92,
+                'use_phash_bundles': True,
+                'use_orb': False,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Fast',
+                'time': '~2 min',
+                'desc': '25+ false positives'
+            },
+            'balanced': {
+                'dpi': 150,
+                'sim_threshold': 0.96,
+                'phash_max_dist': 4,
+                'ssim_threshold': 0.90,
+                'use_phash_bundles': True,
+                'use_orb': True,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Balanced ⭐',
+                'time': '~5 min',
+                'desc': '~9 false positives'
+            },
+            'thorough': {
+                'dpi': 200,
+                'sim_threshold': 0.94,
+                'phash_max_dist': 5,
+                'ssim_threshold': 0.88,
+                'use_phash_bundles': True,
+                'use_orb': True,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Thorough',
+                'time': '~8 min',
+                'desc': '0 false positives'
+            }
+        }
     
     with col1:
         if st.button(f"⚡ Fast\n{presets['fast']['time']}", use_container_width=True):
@@ -656,7 +716,14 @@ elif page == "▶️ Run":
     
     progress_bar = st.progress(0.0)
     status_text = st.empty()
-    log_container = st.expander("📋 Detailed Logs", expanded=False)
+    
+    # Log container with persistent logs
+    with st.expander("📋 Detailed Logs", expanded=False):
+        log_display = st.empty()
+        
+        # Show stored logs from previous run if available
+        if 'run_logs' in st.session_state and st.session_state.run_logs:
+            log_display.code("\n".join(st.session_state.run_logs[-100:]), language="text")
     
     detector_script = Path(__file__).parent / "ai_pdf_panel_duplicate_check_AUTO.py"
     
@@ -769,6 +836,10 @@ elif page == "▶️ Run":
     # Log mode for debugging
     print(f"🔬 Tile-First Mode: {tile_mode} ({mode_reason})")
     
+    # Debug: Print the full command to server logs
+    print(f"DEBUG: Running command: {' '.join(cmd)}")
+    st.info(f"🔍 Command: `{detector_script.name} --pdf {pdf_path.name}...`")
+    
     # Progress patterns
     stage_patterns = [
         (re.compile(r'converting pdf', re.I), "Converting PDF", 0.15),
@@ -804,6 +875,8 @@ elif page == "▶️ Run":
             bufsize=1
         )
         
+        # Store logs in session state so they persist
+        st.session_state.run_logs = []
         log_lines = []
         
         # Timeout handling
@@ -823,9 +896,9 @@ elif page == "▶️ Run":
             
             line = line.rstrip()
             log_lines.append(line)
+            st.session_state.run_logs.append(line)  # Save to session state
             
-            with log_container:
-                st.code("\n".join(log_lines[-40:]), language="text")
+            log_display.code("\n".join(log_lines[-40:]), language="text")
             
             # Progress matching
             for pat, label, prog in stage_patterns:
@@ -837,6 +910,18 @@ elif page == "▶️ Run":
         
         return_code = proc.wait()
         elapsed = time.time() - start_time
+        
+        # Capture any remaining output (for immediate crashes)
+        remaining_output = proc.stdout.read()
+        if remaining_output:
+            for line in remaining_output.split('\n'):
+                if line.strip():
+                    log_lines.append(line.rstrip())
+                    st.session_state.run_logs.append(line.rstrip())
+        
+        # Show logs if process failed
+        if return_code != 0 and log_lines:
+            log_display.code("\n".join(log_lines[-40:]), language="text")
         
         if return_code == 0:
             progress_bar.progress(1.0)
