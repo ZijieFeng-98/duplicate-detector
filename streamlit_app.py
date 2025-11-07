@@ -991,17 +991,25 @@ elif page == "▶️ Run":
                     st.code("\n".join(log_lines[-50:]))
     
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        error_msg = f"❌ Error: {e}"
+        st.error(error_msg)
+        st.session_state.run_completed = True
+        st.session_state.run_logs.append(error_msg)
+
         import traceback
-        st.code(traceback.format_exc())
+        tb_text = traceback.format_exc()
+        st.code(tb_text)
+        st.session_state.run_logs.extend(tb_text.rstrip().splitlines())
         
         # Show command that failed
         st.warning("**Failed Command:**")
-        st.code(" ".join(str(c) for c in cmd))
+        failed_cmd = " ".join(str(c) for c in cmd)
+        st.code(failed_cmd)
+        st.session_state.run_logs.append(f"CMD: {failed_cmd}")
     finally:
         try:
-            proc.kill()
-        except:
+            proc.kill()  # type: ignore[name-defined]
+        except Exception:
             pass
 
 # ═══════════════════════════════════════════════════════════════
