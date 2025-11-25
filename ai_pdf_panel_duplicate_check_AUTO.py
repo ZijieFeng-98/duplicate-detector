@@ -5557,5 +5557,24 @@ if __name__ == "__main__":
         print(f"Working Directory: {os.getcwd()}", file=sys.stderr)
         print("="*70, file=sys.stderr)
         
+        # Try to save metadata even on error (for debugging)
+        try:
+            if 'OUT_DIR' in globals() and 'start_time' in globals():
+                error_metadata = {
+                    "error": True,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "runtime_seconds": time.time() - start_time if 'start_time' in globals() else 0.0,
+                    "panels": 0,
+                    "pages": 0,
+                    "total_pairs": 0
+                }
+                metadata_file = OUT_DIR / "RUN_METADATA.json"
+                with open(metadata_file, 'w') as f:
+                    json.dump(error_metadata, f, indent=2)
+                print(f"\n⚠️  Error metadata saved to {metadata_file}", file=sys.stderr)
+        except Exception as meta_error:
+            print(f"⚠️  Could not save error metadata: {meta_error}", file=sys.stderr)
+        
         # Exit with error code for Streamlit to detect
         sys.exit(1)
