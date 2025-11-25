@@ -5380,14 +5380,20 @@ if __name__ == "__main__":
     import traceback
     
     try:
+        # Ensure current directory is in Python path for module imports
+        script_dir = Path(__file__).parent.absolute()
+        if str(script_dir) not in sys.path:
+            sys.path.insert(0, str(script_dir))
+        
         # Import config system
         try:
             from duplicate_detector.models.config import DetectorConfig, get_config
             from duplicate_detector.models.migration import apply_config_to_module
             CONFIG_SYSTEM_AVAILABLE = True
-        except ImportError:
+        except ImportError as e:
             CONFIG_SYSTEM_AVAILABLE = False
-            print("⚠️  Config system not available, using defaults")
+            print(f"⚠️  Config system not available: {e}")
+            print("⚠️  Using legacy defaults - some features may be limited")
         
         # CLI support for Streamlit
         _save_metrics = False
