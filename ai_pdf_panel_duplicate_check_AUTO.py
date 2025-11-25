@@ -3384,41 +3384,72 @@ def compute_file_hash(paths: List[Path]) -> str:
 
 # --- AUDIT TRAIL --------------------------------------------------------------
 def write_run_metadata(out_dir: Path, start_time: float, **kwargs):
-    """Write run metadata for audit trail"""
-    metadata = {
-        "timestamp": datetime.now().isoformat(),
-        "runtime_seconds": time.time() - start_time,
-        "config": {
-            "pdf_path": str(PDF_PATH),
-            "dpi": DPI,
-            "caption_pages": list(CAPTION_PAGES),
-            "min_panel_area": MIN_PANEL_AREA,
-            "sim_threshold": SIM_THRESHOLD,
-            "phash_max_dist": PHASH_MAX_DIST,
-            "ssim_threshold": SSIM_THRESHOLD,
-            "top_k_neighbors": TOP_K_NEIGHBORS,
-            "use_mutual_nn": USE_MUTUAL_NN,
-            "use_ssim_validation": USE_SSIM_VALIDATION,
-            "batch_size": BATCH_SIZE,
-            "device": DEVICE,
-            "num_workers": NUM_WORKERS,
-            "random_seed": RANDOM_SEED,
-        },
-        "versions": {
-            "python": sys.version,
-            "numpy": np.__version__,
-            "pandas": pd.__version__,
-            "torch": torch.__version__,
-            "opencv": cv2.__version__,
-        },
-        "results": kwargs
-    }
-    
-    metadata_file = out_dir / "RUN_METADATA.json"
-    with open(metadata_file, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    
-    print(f"\n  ✓ Run metadata saved: {metadata_file}")
+    """Write run metadata for audit trail - robust version that always succeeds"""
+    try:
+        # Ensure output directory exists
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Safely get config values (may not be set if pipeline failed early)
+        def safe_get(name, default=None):
+            try:
+                return globals().get(name, default)
+            except:
+                return default
+        
+        metadata = {
+            "timestamp": datetime.now().isoformat(),
+            "runtime_seconds": time.time() - start_time,
+            "config": {
+                "pdf_path": str(safe_get('PDF_PATH', 'unknown')),
+                "dpi": safe_get('DPI', 150),
+                "caption_pages": list(safe_get('CAPTION_PAGES', set())),
+                "min_panel_area": safe_get('MIN_PANEL_AREA', 80000),
+                "sim_threshold": safe_get('SIM_THRESHOLD', 0.96),
+                "phash_max_dist": safe_get('PHASH_MAX_DIST', 4),
+                "ssim_threshold": safe_get('SSIM_THRESHOLD', 0.90),
+                "top_k_neighbors": safe_get('TOP_K_NEIGHBORS', 50),
+                "use_mutual_nn": safe_get('USE_MUTUAL_NN', False),
+                "use_ssim_validation": safe_get('USE_SSIM_VALIDATION', True),
+                "batch_size": safe_get('BATCH_SIZE', 32),
+                "device": str(safe_get('DEVICE', 'cpu')),
+                "num_workers": safe_get('NUM_WORKERS', 0),
+                "random_seed": safe_get('RANDOM_SEED', 123),
+            },
+            "versions": {
+                "python": sys.version.split()[0] if hasattr(sys, 'version') else "unknown",
+                "numpy": np.__version__ if 'np' in globals() else "unknown",
+                "pandas": pd.__version__ if 'pd' in globals() else "unknown",
+                "torch": torch.__version__ if 'torch' in globals() else "unknown",
+                "opencv": cv2.__version__ if 'cv2' in globals() else "unknown",
+            },
+            "results": kwargs
+        }
+        
+        metadata_file = out_dir / "RUN_METADATA.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"\n  ✓ Run metadata saved: {metadata_file}")
+        return True
+    except Exception as e:
+        # Even if metadata write fails, try to save a minimal error record
+        try:
+            error_metadata = {
+                "error": True,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "timestamp": datetime.now().isoformat(),
+                "runtime_seconds": time.time() - start_time if 'start_time' in locals() else 0.0,
+                "results": kwargs
+            }
+            metadata_file = out_dir / "RUN_METADATA.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(error_metadata, f, indent=2)
+            print(f"\n  ⚠️  Run metadata saved with errors: {metadata_file}")
+            return True
+        except Exception as e2:
+            print(f"\n  ❌ Failed to save metadata: {e2}", file=sys.stderr)
+            return False
 
 # --- IoU for NMS --------------------------------------------------------------
 def compute_iou(box_a: dict, box_b: dict) -> float:
@@ -5512,7 +5543,33 @@ if __name__ == "__main__":
         # Ensure output directory exists
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         
-        main()
+        # Track start time at top level for error metadata
+        pipeline_start_time = time.time()
+        
+        # Run main pipeline
+        try:
+            main()
+        finally:
+            # Always try to save metadata, even if main() failed
+            # Check if metadata was already saved by main()
+            metadata_file = OUT_DIR / "RUN_METADATA.json"
+            if not metadata_file.exists():
+                try:
+                    # Save minimal metadata if main() failed before saving
+                    minimal_metadata = {
+                        "error": True,
+                        "timestamp": datetime.now().isoformat(),
+                        "runtime_seconds": time.time() - pipeline_start_time,
+                        "panels": 0,
+                        "pages": 0,
+                        "total_pairs": 0,
+                        "message": "Pipeline may have failed before completion - check logs"
+                    }
+                    with open(metadata_file, 'w') as f:
+                        json.dump(minimal_metadata, f, indent=2)
+                    print(f"\n⚠️  Minimal metadata saved: {metadata_file}")
+                except Exception as meta_error:
+                    print(f"❌ Could not save metadata: {meta_error}", file=sys.stderr)
         
         # Optional: lightweight metrics writer (if --save-metrics-json was passed)
         if _save_metrics:
@@ -5565,17 +5622,19 @@ if __name__ == "__main__":
         
         # Try to save metadata even on error (for debugging)
         try:
-            if 'OUT_DIR' in globals() and 'start_time' in globals():
+            if 'OUT_DIR' in globals():
                 error_metadata = {
                     "error": True,
                     "error_type": type(e).__name__,
                     "error_message": str(e),
-                    "runtime_seconds": time.time() - start_time if 'start_time' in globals() else 0.0,
+                    "runtime_seconds": time.time() - pipeline_start_time if 'pipeline_start_time' in globals() else 0.0,
                     "panels": 0,
                     "pages": 0,
-                    "total_pairs": 0
+                    "total_pairs": 0,
+                    "timestamp": datetime.now().isoformat()
                 }
                 metadata_file = OUT_DIR / "RUN_METADATA.json"
+                OUT_DIR.mkdir(parents=True, exist_ok=True)
                 with open(metadata_file, 'w') as f:
                     json.dump(error_metadata, f, indent=2)
                 print(f"\n⚠️  Error metadata saved to {metadata_file}", file=sys.stderr)
