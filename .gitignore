@@ -24,10 +24,11 @@ Thumbs.db
 
 # Output
 ai_clip_output/
-duplicate_detector/
 test_output/
 *.pdf
 *.zip
+
+# Note: duplicate_detector/ is needed for deployment - keep it tracked
 
 # Cache
 *.npy
