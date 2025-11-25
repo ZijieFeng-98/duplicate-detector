@@ -51,6 +51,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
+# CONFIGURATION SYSTEM INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+try:
+    from duplicate_detector.models.config import DetectorConfig
+    CONFIG_SYSTEM_AVAILABLE = True
+except ImportError:
+    CONFIG_SYSTEM_AVAILABLE = False
+
+# ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 TEMP_DIR = Path(tempfile.gettempdir()) / "duplicate_detector"
@@ -398,61 +407,114 @@ elif page == "⚙️ Configure":
     st.info("**📊 Test Results (14 known duplicates):** Balanced = 100% detect + 9 FPs | Thorough = 78% detect + 0 FPs | Fast = 100% detect + 25 FPs")
     col1, col2, col3 = st.columns(3)
     
-    presets = {
-        'fast': {
-            'dpi': 100,
-            'sim_threshold': 0.97,
-            'phash_max_dist': 3,
-            'ssim_threshold': 0.92,
-            'use_phash_bundles': True,
-            'use_orb': False,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Fast',
-            'time': '~2 min',
-            'desc': '25+ false positives'
-        },
-        'balanced': {
-            'dpi': 150,
-            'sim_threshold': 0.96,
-            'phash_max_dist': 4,
-            'ssim_threshold': 0.90,
-            'use_phash_bundles': True,
-            'use_orb': True,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Balanced ⭐',
-            'time': '~5 min',
-            'desc': '~9 false positives'
-        },
-        'thorough': {
-            'dpi': 200,
-            'sim_threshold': 0.94,
-            'phash_max_dist': 5,
-            'ssim_threshold': 0.88,
-            'use_phash_bundles': True,
-            'use_orb': True,
-            'use_tier_gating': True,
-            'batch_size': 32,
-            'name': 'Thorough',
-            'time': '~8 min',
-            'desc': '0 false positives'
+    # Load presets from config system or use legacy
+    if CONFIG_SYSTEM_AVAILABLE:
+        # Use config system presets
+        fast_config = DetectorConfig.from_preset("fast")
+        balanced_config = DetectorConfig.from_preset("balanced")
+        thorough_config = DetectorConfig.from_preset("thorough")
+        
+        presets = {
+            'fast': {
+                'dpi': fast_config.dpi,
+                'sim_threshold': fast_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': fast_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': fast_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': fast_config.feature_flags.use_phash_bundles,
+                'use_orb': fast_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': fast_config.feature_flags.use_tier_gating,
+                'batch_size': fast_config.performance.batch_size,
+                'name': 'Fast',
+                'time': '~2 min',
+                'desc': '25+ false positives'
+            },
+            'balanced': {
+                'dpi': balanced_config.dpi,
+                'sim_threshold': balanced_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': balanced_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': balanced_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': balanced_config.feature_flags.use_phash_bundles,
+                'use_orb': balanced_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': balanced_config.feature_flags.use_tier_gating,
+                'batch_size': balanced_config.performance.batch_size,
+                'name': 'Balanced ⭐',
+                'time': '~5 min',
+                'desc': '~9 false positives'
+            },
+            'thorough': {
+                'dpi': thorough_config.dpi,
+                'sim_threshold': thorough_config.duplicate_detection.sim_threshold,
+                'phash_max_dist': thorough_config.duplicate_detection.phash_max_dist,
+                'ssim_threshold': thorough_config.duplicate_detection.ssim_threshold,
+                'use_phash_bundles': thorough_config.feature_flags.use_phash_bundles,
+                'use_orb': thorough_config.feature_flags.use_orb_ransac,
+                'use_tier_gating': thorough_config.feature_flags.use_tier_gating,
+                'batch_size': thorough_config.performance.batch_size,
+                'name': 'Thorough',
+                'time': '~8 min',
+                'desc': '0 false positives'
+            }
         }
-    }
+    else:
+        # Legacy presets (fallback)
+        presets = {
+            'fast': {
+                'dpi': 100,
+                'sim_threshold': 0.97,
+                'phash_max_dist': 3,
+                'ssim_threshold': 0.92,
+                'use_phash_bundles': True,
+                'use_orb': False,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Fast',
+                'time': '~2 min',
+                'desc': '25+ false positives'
+            },
+            'balanced': {
+                'dpi': 150,
+                'sim_threshold': 0.96,
+                'phash_max_dist': 4,
+                'ssim_threshold': 0.90,
+                'use_phash_bundles': True,
+                'use_orb': True,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Balanced ⭐',
+                'time': '~5 min',
+                'desc': '~9 false positives'
+            },
+            'thorough': {
+                'dpi': 200,
+                'sim_threshold': 0.94,
+                'phash_max_dist': 5,
+                'ssim_threshold': 0.88,
+                'use_phash_bundles': True,
+                'use_orb': True,
+                'use_tier_gating': True,
+                'batch_size': 32,
+                'name': 'Thorough',
+                'time': '~8 min',
+                'desc': '0 false positives'
+            }
+        }
     
     with col1:
         if st.button(f"⚡ Fast\n{presets['fast']['time']}", use_container_width=True):
             st.session_state.preset = presets['fast']
+            st.session_state.preset_name = 'fast'
             st.rerun()
     
     with col2:
         if st.button(f"🎯 Balanced\n{presets['balanced']['time']}", use_container_width=True, type="primary"):
             st.session_state.preset = presets['balanced']
+            st.session_state.preset_name = 'balanced'
             st.rerun()
     
     with col3:
         if st.button(f"🔬 Thorough\n{presets['thorough']['time']}", use_container_width=True):
             st.session_state.preset = presets['thorough']
+            st.session_state.preset_name = 'thorough'
             st.rerun()
     
     st.markdown("---")
@@ -622,6 +684,7 @@ elif page == "⚙️ Configure":
                 'suppress_same_page': False,
                 'debug_mode': False,
                 'auto_open': False,
+                'preset_name': st.session_state.get('preset_name', 'balanced'),  # Store preset name
                 
                 # Tile-First parameters
                 'tile_mode': tile_mode if tile_first_available else "Disabled",
@@ -665,6 +728,19 @@ elif page == "▶️ Run":
         st.info(f"Make sure `ai_pdf_panel_duplicate_check_AUTO.py` is in: {detector_script.parent}")
         st.stop()
     
+    # Pre-flight check: Try importing the script to catch import errors early
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("detector_script", detector_script)
+        if spec is None:
+            st.warning("⚠️ Could not load detector script spec")
+        else:
+            # Just check if it can be loaded, don't execute
+            pass
+    except Exception as e:
+        st.warning(f"⚠️ Pre-flight check warning: {e}")
+        st.info("This may indicate missing dependencies. The script will still attempt to run.")
+    
     # ═══════════════════════════════════════════════════════════════
     # SINGLE DECISION POINT: Route to Tile-First or Standard Pipeline
     # ═══════════════════════════════════════════════════════════════
@@ -700,18 +776,27 @@ elif page == "▶️ Run":
             st.rerun()
         st.stop()
     
-    # Build command
+    # Build command - use preset if available, otherwise individual flags
     cmd = [
         sys.executable, str(detector_script),
         "--pdf", str(pdf_path.absolute()),  # Use absolute path
         "--output", str(Path(config['output_dir']).absolute()),
-        "--dpi", str(config['dpi']),
-        "--sim-threshold", str(config['sim_threshold']),
-        "--phash-max-dist", str(config['phash_max_dist']),
-        "--ssim-threshold", str(config['ssim_threshold']),
-        "--batch-size", str(config['batch_size']),
         "--no-auto-open",  # Don't open browser in Streamlit
     ]
+    
+    # Use preset if available (simpler and more reliable)
+    preset_name = config.get('preset_name', None)
+    if preset_name and preset_name in ['fast', 'balanced', 'thorough', 'dr_zhong']:
+        cmd.extend(["--preset", preset_name])
+    else:
+        # Fallback to individual flags
+        cmd.extend([
+            "--dpi", str(config['dpi']),
+            "--sim-threshold", str(config['sim_threshold']),
+            "--phash-max-dist", str(config['phash_max_dist']),
+            "--ssim-threshold", str(config['ssim_threshold']),
+            "--batch-size", str(config['batch_size']),
+        ])
     
     # Debug: Log file info
     st.info(f"📄 Processing: {pdf_path.name} ({pdf_path.stat().st_size / 1024 / 1024:.1f}MB)")
@@ -768,6 +853,12 @@ elif page == "▶️ Run":
     
     # Log mode for debugging
     print(f"🔬 Tile-First Mode: {tile_mode} ({mode_reason})")
+    
+    # Log the actual command being executed (for debugging)
+    with log_container:
+        st.info("**Command being executed:**")
+        st.code(" ".join(str(c) for c in cmd))
+        st.caption("💡 If the pipeline fails, copy this command and run it locally to debug")
     
     # Progress patterns
     stage_patterns = [
@@ -852,14 +943,31 @@ elif page == "▶️ Run":
             missing = [f.name for f in expected_files if not f.exists()]
             
             if missing:
-                st.warning(f"⚠️ Run completed but missing files: {', '.join(missing)}")
+                st.error(f"❌ Pipeline completed but missing critical files: {', '.join(missing)}")
+                st.warning("**Possible causes:**")
+                st.markdown("""
+                - Pipeline script failed silently (check logs above)
+                - Output directory permissions issue
+                - Import errors in pipeline script
+                - Missing dependencies
+                """)
                 with log_container:
-                    st.info("Check dependency warnings and logs above")
+                    st.error("**Last 100 lines of output:**")
+                    st.code("\n".join(log_lines[-100:]) if log_lines else "No output captured")
+                st.stop()
             
             results = parse_results(output_dir)
             
             if results['total_pairs'] == 0 and not expected_files[0].exists():
-                st.warning("⚠️ No pairs found or report missing. Check logs above.")
+                st.error("❌ No pairs found AND report file missing - pipeline likely failed")
+                st.info("**Troubleshooting:**")
+                st.markdown("""
+                1. Check the logs above for import errors
+                2. Verify all dependencies are installed
+                3. Try uploading a smaller PDF
+                4. Check Streamlit Cloud logs in 'Manage app'
+                """)
+                st.stop()
             
             st.session_state.results = results
             st.session_state.processing_complete = True
@@ -908,7 +1016,30 @@ elif page == "📊 Results":
         st.stop()
     
     results = st.session_state.results
+    if results is None:
+        st.error("❌ Results not found. The analysis may have failed.")
+        st.info("**Troubleshooting:**")
+        st.markdown("""
+        1. Go back to **▶️ Run** page and check the logs
+        2. Verify the PDF uploaded successfully
+        3. Check for dependency errors
+        4. Try a smaller PDF or different preset
+        """)
+        if st.button("← Back to Run"):
+            st.session_state.current_page = "▶️ Run"
+            st.rerun()
+        st.stop()
+    
     output_dir = Path(results['output_dir'])
+    
+    # Check if output directory exists
+    if not output_dir.exists():
+        st.error(f"❌ Output directory not found: {output_dir}")
+        st.info("The analysis may have failed before creating output files.")
+        if st.button("← Back to Run"):
+            st.session_state.current_page = "▶️ Run"
+            st.rerun()
+        st.stop()
     
     # ═══════════════════════════════════════════════════════════════
     # RUN MODE BANNER (one-liner)

@@ -4,7 +4,7 @@
 # Implements: FAISS, caching, deterministic runs, parallel processing
 
 from pathlib import Path
-import os, sys, json, time
+import os, sys, json, time, hashlib
 import argparse
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Set, Optional
@@ -16,6 +16,12 @@ from tqdm import tqdm
 import cv2
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from wb_lane_normalization import (
+    normalize_wb_panel,
+    compute_lane_profiles,
+    lane_profile_set_distance,
+)
 
 # Tile detection module (optional)
 try:
@@ -36,15 +42,32 @@ try:
 except ImportError:
     TILE_FIRST_AVAILABLE = False
 
+# FigCheck-inspired heuristics (optional)
+try:
+    from tools.figcheck_heuristics import (
+        FigcheckHeuristicConfig,
+        apply_figcheck_scores,
+    )
+
+    FIGCHECK_HEURISTICS_AVAILABLE = True
+    DEFAULT_FIGCHECK_CONFIG = FigcheckHeuristicConfig()
+    FIGCHECK_IMPORT_ERROR = None
+except Exception as exc:
+    FIGCHECK_HEURISTICS_AVAILABLE = False
+    DEFAULT_FIGCHECK_CONFIG = None
+    FIGCHECK_IMPORT_ERROR = exc
+
 # --- CONFIG -------------------------------------------------------------------
-PDF_PATH = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/STM-Combined Figures.pdf")
-OUT_DIR  = Path("/Users/zijiefeng/Desktop/Guo's lab/My_Research/Dr_Zhong/ai_clip_output")
+# Configuration is now managed via duplicate_detector.models.config
+# Hardcoded paths removed - use CLI args, environment variables, or config files
+PDF_PATH = None  # Set via CLI, environment variable, or config file
+OUT_DIR = None   # Set via CLI, environment variable, or config file
 
 # PDF conversion
 DPI = 150
 
-# Exclude caption/legend pages (1-indexed)
-CAPTION_PAGES: Set[int] = {14, 27}
+# Exclude caption/legend pages (1-indexed) - Set via config or CLI
+CAPTION_PAGES: Set[int] = set()  # Empty by default, can be set via config
 
 # Panel detection parameters - OPTIMIZED
 MIN_PANEL_AREA = 80000
@@ -107,6 +130,9 @@ HIGHLIGHT_DIFFERENCES = True      # Visual diff highlighting
 USE_TIER_GATING = True            # Tier A/B classification
 USE_PHASH_BUNDLES = True          # Rotation/mirror-robust pHash (TESTED ✅)
 USE_ORB_RANSAC = True             # Partial duplicate detection (TESTED ✅)
+
+# Optional FigCheck-inspired heuristics (experimental, guarded by feature flag)
+ENABLE_FIGCHECK_HEURISTICS = False
 
 # ---- Optional: high-confidence relaxed ORB gate (default OFF)
 ENABLE_ORB_RELAX = False          # Toggle ON only if needed for tough partial dupes
@@ -248,6 +274,10 @@ ORB_TRIGGER_PHASH_THRESHOLD = 4
 ORB_MAX_KEYPOINTS = 1000
 ORB_RETRY_SCALES = [1.0, 2.0, 0.5]
 ORB_RATIO_THRESHOLD = 0.75
+WB_TEXTURE_SCORE_THRESHOLD = 12.0
+WB_MIN_VERTICAL_LINES = 1
+WB_ORB_MIN_MATCHES = 25
+WB_DTW_DISTANCE_THRESHOLD = 0.25
 
 PHASH_COMPUTE_BUNDLE = True
 PHASH_BUNDLE_SHORT_CIRCUIT = 3
@@ -2586,8 +2616,204 @@ def load_or_compute_phash_bundles(panel_paths: List[Path]) -> List[dict]:
                 "num_panels": len(panel_paths),
                 "timestamp": datetime.now().isoformat()
             }, f)
-    
+
     return bundles
+
+
+def get_wb_normalized_cache_dir() -> Path:
+    """Directory for cached Western blot normalizations."""
+    cache_dir = OUT_DIR / "cache" / "wb_normalized"
+    ensure_dir(cache_dir)
+    return cache_dir
+
+
+def _prepare_runtime_wb_entry(entry: dict) -> dict:
+    runtime_entry = dict(entry)
+    runtime_entry["lane_regions"] = [tuple(region) for region in runtime_entry.get("lane_regions", [])]
+    runtime_entry["image_shape"] = tuple(runtime_entry.get("image_shape", (0, 0)))
+    runtime_entry["_normalized_image"] = None
+    runtime_entry["_lane_profiles"] = None
+    runtime_entry["_normalized_orb"] = None
+    return runtime_entry
+
+
+def load_or_compute_wb_normalizations(panel_paths: List[Path]) -> Dict[str, dict]:
+    """Detect and cache Western blot lane normalizations for the given panels."""
+    if not panel_paths:
+        return {}
+
+    cache_dir = get_wb_normalized_cache_dir()
+    meta_path = cache_dir / f"metadata_{CACHE_VERSION}.json"
+
+    cached_meta: Dict[str, dict] = {}
+    if ENABLE_CACHE and meta_path.exists():
+        try:
+            with open(meta_path, 'r') as f:
+                cached_meta = json.load(f)
+        except Exception:
+            cached_meta = {}
+
+    runtime_data: Dict[str, dict] = {}
+    updated = False
+
+    for panel_path in panel_paths:
+        panel_str = str(panel_path)
+        try:
+            stat = panel_path.stat()
+            mtime = stat.st_mtime
+            size = stat.st_size
+        except FileNotFoundError:
+            continue
+
+        entry = cached_meta.get(panel_str) if ENABLE_CACHE else None
+        if entry:
+            normalized_path = entry.get("normalized_path")
+            if normalized_path and not Path(normalized_path).exists():
+                entry["normalized_path"] = None
+
+            same_file = (
+                abs(entry.get("mtime", 0.0) - mtime) < 1e-6
+                and entry.get("size") == size
+            )
+
+            if same_file:
+                runtime_entry = _prepare_runtime_wb_entry(entry)
+                runtime_data[panel_str] = runtime_entry
+                continue
+
+        image = cv2.imread(panel_str)
+        if image is None:
+            empty_entry = {
+                "is_candidate": False,
+                "texture_score": 0.0,
+                "angle": 0.0,
+                "lane_count": 0,
+                "lane_regions": [],
+                "normalized_path": None,
+                "image_shape": [0, 0],
+                "mtime": mtime,
+                "size": size,
+            }
+            runtime_entry = _prepare_runtime_wb_entry(empty_entry)
+            runtime_data[panel_str] = runtime_entry
+            if ENABLE_CACHE:
+                cached_meta[panel_str] = empty_entry
+                updated = True
+            continue
+
+        normalized_image, norm_result = normalize_wb_panel(
+            image,
+            texture_threshold=WB_TEXTURE_SCORE_THRESHOLD,
+            min_vertical_lines=WB_MIN_VERTICAL_LINES,
+        )
+
+        normalized_path = None
+        if norm_result.is_candidate:
+            hash_name = hashlib.md5(panel_str.encode()).hexdigest()
+            normalized_file = cache_dir / f"{hash_name}_norm.png"
+            cv2.imwrite(str(normalized_file), normalized_image)
+            normalized_path = str(normalized_file)
+
+        stored_entry = {
+            "is_candidate": norm_result.is_candidate,
+            "texture_score": float(norm_result.texture_score),
+            "angle": float(norm_result.rotation_angle),
+            "lane_count": int(norm_result.lane_count),
+            "lane_regions": [list(region) for region in norm_result.lane_regions],
+            "normalized_path": normalized_path,
+            "image_shape": list(norm_result.image_shape),
+            "mtime": mtime,
+            "size": size,
+        }
+
+        runtime_entry = _prepare_runtime_wb_entry(stored_entry)
+        if norm_result.is_candidate:
+            runtime_entry["_normalized_image"] = normalized_image
+
+        runtime_data[panel_str] = runtime_entry
+
+        if ENABLE_CACHE:
+            cached_meta[panel_str] = stored_entry
+            updated = True
+
+    if ENABLE_CACHE and updated:
+        with open(meta_path, 'w') as f:
+            json.dump(cached_meta, f, indent=2)
+
+    return runtime_data
+
+
+def ensure_normalized_image(info: Optional[dict]) -> Optional[np.ndarray]:
+    """Load the cached normalized image for a Western blot panel if available."""
+    if not info or not info.get("is_candidate"):
+        return None
+
+    cached_img = info.get("_normalized_image")
+    if isinstance(cached_img, np.ndarray):
+        return cached_img
+
+    norm_path = info.get("normalized_path")
+    if norm_path and Path(norm_path).exists():
+        img = cv2.imread(norm_path)
+        info["_normalized_image"] = img
+        return img
+
+    return None
+
+
+def ensure_lane_profiles(info: Optional[dict]) -> List[np.ndarray]:
+    """Compute or retrieve cached lane profiles for a normalized panel."""
+    if not info or not info.get("is_candidate"):
+        return []
+
+    cached = info.get("_lane_profiles")
+    if cached is not None:
+        return cached
+
+    image = ensure_normalized_image(info)
+    if image is None:
+        info["_lane_profiles"] = []
+        return []
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    regions = [tuple(region) for region in info.get("lane_regions", [])]
+    profiles = compute_lane_profiles(gray, regions)
+    info["_lane_profiles"] = profiles
+    return profiles
+
+
+def ensure_normalized_orb(info: Optional[dict]) -> Optional[dict]:
+    """Lazy-compute ORB features for a normalized Western blot panel."""
+    if not info or not info.get("is_candidate"):
+        return None
+
+    cached = info.get("_normalized_orb")
+    if cached:
+        return cached
+
+    norm_path = info.get("normalized_path")
+    if not norm_path:
+        return None
+
+    keypoints, descriptors = extract_orb_features(norm_path, ORB_MAX_KEYPOINTS, ORB_RETRY_SCALES)
+    data = {"keypoints": keypoints, "descriptors": descriptors}
+    info["_normalized_orb"] = data
+    return data
+
+
+def compute_wb_lane_distance(info_a: Optional[dict], info_b: Optional[dict]) -> Optional[float]:
+    """Compute DTW distance between lane profiles of two normalized panels."""
+    if not info_a or not info_b:
+        return None
+
+    profiles_a = ensure_lane_profiles(info_a)
+    profiles_b = ensure_lane_profiles(info_b)
+
+    if not profiles_a or not profiles_b:
+        return None
+
+    return lane_profile_set_distance(profiles_a, profiles_b)
+
 
 def load_or_compute_orb_features(panel_paths: List[Path]) -> dict:
     """Cache ORB descriptors (keypoints converted to picklable format)"""
@@ -4845,7 +5071,21 @@ def main():
     
     df_merged = merge_reports_enhanced(df_ssim_validated, df_phash, df_orb)
     stage_counts['merged_pairs'] = len(df_merged)
-    
+
+    if ENABLE_FIGCHECK_HEURISTICS:
+        if not FIGCHECK_HEURISTICS_AVAILABLE:
+            print(f"  ⚠️ FigCheck heuristics requested but unavailable: {FIGCHECK_IMPORT_ERROR}")
+        elif df_merged.empty:
+            print("  ⚠️ FigCheck heuristics skipped (no candidate pairs)")
+        else:
+            print("  Applying FigCheck-inspired scoring signals...")
+            cfg = DEFAULT_FIGCHECK_CONFIG or FigcheckHeuristicConfig()
+            df_merged = apply_figcheck_scores(
+                df_merged,
+                config=cfg,
+                progress=len(df_merged) >= 20,
+            )
+
     # Require geometric corroboration for near pages (kills grid lookalikes)
     if REQUIRE_GEOMETRY_FOR_NEAR_PAGES and not df_merged.empty:
         print(f"  Applying near-page geometry requirement (gap≤{NEAR_PAGE_GAP})...")
@@ -5024,6 +5264,11 @@ def parse_cli_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
+    # Configuration file support
+    parser.add_argument("--config", type=str, help="Path to YAML or JSON config file")
+    parser.add_argument("--preset", type=str, choices=["fast", "balanced", "thorough", "dr_zhong"], 
+                        help="Use preset configuration (balanced: general, thorough: hybrid scan for dense/small panels)")
+    
     # Input/Output
     parser.add_argument("--pdf", type=str, help="Path to input PDF file")
     parser.add_argument("--output", type=str, help="Output directory for results")
@@ -5051,7 +5296,11 @@ def parse_cli_args():
     parser.add_argument("--enable-cache", action="store_true", default=True, help="Enable embedding cache")
     parser.add_argument("--no-cache", action="store_false", dest="enable_cache", help="Disable cache")
     parser.add_argument("--suppress-same-page", action="store_true", default=False, help="Suppress same-page duplicates")
-    
+    parser.add_argument("--enable-figcheck-heuristics", action="store_true", default=ENABLE_FIGCHECK_HEURISTICS,
+                        help="Enable FigCheck-inspired band alignment scoring (experimental)")
+    parser.add_argument("--disable-figcheck-heuristics", action="store_false", dest="enable_figcheck_heuristics",
+                        help="Disable FigCheck-inspired heuristics")
+
     # Modality-specific detection (Option 2)
     parser.add_argument("--use-modality-specific", action="store_true", default=False, help="Use modality-specific tier gating (Option 2: Advanced)")
     parser.add_argument("--enable-modality-detection", action="store_true", default=False, help="Pre-classify image types (WB, confocal, TEM, etc.)")
@@ -5098,29 +5347,94 @@ if __name__ == "__main__":
     import traceback
     
     try:
+        # Import config system
+        try:
+            from duplicate_detector.models.config import DetectorConfig, get_config
+            from duplicate_detector.models.migration import apply_config_to_module
+            CONFIG_SYSTEM_AVAILABLE = True
+        except ImportError:
+            CONFIG_SYSTEM_AVAILABLE = False
+            print("⚠️  Config system not available, using defaults")
+        
         # CLI support for Streamlit
         _save_metrics = False
         _focus_pages = []
+        config = None
+        
         if len(sys.argv) > 1:
             args = parse_cli_args()
-            if args.pdf: 
-                PDF_PATH = Path(args.pdf)
-            if args.output: 
-                OUT_DIR = Path(args.output)
+            
+            # Load configuration
+            if CONFIG_SYSTEM_AVAILABLE:
+                # Priority: config file > preset > defaults
+                if args.config:
+                    config = DetectorConfig.from_yaml(Path(args.config)) if Path(args.config).suffix.lower() in ['.yaml', '.yml'] else DetectorConfig.from_json(Path(args.config))
+                elif args.preset:
+                    config = DetectorConfig.from_preset(args.preset)
+                else:
+                    config = DetectorConfig()
+                
+                # Override with CLI arguments
+                if args.pdf:
+                    config.pdf_path = Path(args.pdf)
+                if args.output:
+                    config.output_dir = Path(args.output)
+                if args.dpi:
+                    config.dpi = args.dpi
+                if args.sim_threshold:
+                    config.duplicate_detection.sim_threshold = args.sim_threshold
+                if args.phash_max_dist:
+                    config.duplicate_detection.phash_max_dist = args.phash_max_dist
+                if args.ssim_threshold:
+                    config.duplicate_detection.ssim_threshold = args.ssim_threshold
+                if args.batch_size:
+                    config.performance.batch_size = args.batch_size
+                
+                # Feature flags
+                config.feature_flags.use_phash_bundles = args.use_phash_bundles
+                config.feature_flags.use_orb_ransac = args.use_orb
+                config.feature_flags.use_tier_gating = args.use_tier_gating
+                config.feature_flags.highlight_differences = args.highlight_diffs
+                config.feature_flags.enable_cache = args.enable_cache
+                config.feature_flags.enable_figcheck_heuristics = args.enable_figcheck_heuristics
+                config.feature_flags.debug_mode = args.debug
+                config.auto_open_results = args.auto_open
+                
+                # Apply config to module globals
+                apply_config_to_module(config, sys.modules[__name__])
+                
+                # Set paths
+                PDF_PATH = config.pdf_path
+                OUT_DIR = config.output_dir
+            else:
+                # Fallback to old method
+                if args.pdf: 
+                    PDF_PATH = Path(args.pdf)
+                if args.output: 
+                    OUT_DIR = Path(args.output)
             # Optional output suffix
             if args.out_suffix:
-                OUT_DIR = OUT_DIR.parent / f"{OUT_DIR.name}_{args.out_suffix}"
-                print(f"  ▶ OUT_DIR overridden → {OUT_DIR}")
-            DPI = args.dpi
-            SIM_THRESHOLD = args.sim_threshold
-            PHASH_MAX_DIST = args.phash_max_dist
-            SSIM_THRESHOLD = args.ssim_threshold
-            BATCH_SIZE = args.batch_size
-            USE_PHASH_BUNDLES = args.use_phash_bundles
-            USE_ORB_RANSAC = args.use_orb
-            USE_TIER_GATING = args.use_tier_gating
-            HIGHLIGHT_DIFFERENCES = args.highlight_diffs
-            ENABLE_CACHE = args.enable_cache
+                if OUT_DIR:
+                    OUT_DIR = OUT_DIR.parent / f"{OUT_DIR.name}_{args.out_suffix}"
+                    print(f"  ▶ OUT_DIR overridden → {OUT_DIR}")
+            
+            # Additional CLI-only overrides (if not using config system)
+            if not CONFIG_SYSTEM_AVAILABLE:
+                DPI = args.dpi
+                SIM_THRESHOLD = args.sim_threshold
+                PHASH_MAX_DIST = args.phash_max_dist
+                SSIM_THRESHOLD = args.ssim_threshold
+                BATCH_SIZE = args.batch_size
+                USE_PHASH_BUNDLES = args.use_phash_bundles
+                USE_ORB_RANSAC = args.use_orb
+                USE_TIER_GATING = args.use_tier_gating
+                HIGHLIGHT_DIFFERENCES = args.highlight_diffs
+                ENABLE_CACHE = args.enable_cache
+                ENABLE_FIGCHECK_HEURISTICS = args.enable_figcheck_heuristics
+                DEBUG_MODE = args.debug
+                AUTO_OPEN_RESULTS = args.auto_open
+            
+            # CLI-only flags (not in config yet)
             SUPPRESS_SAME_PAGE_DUPES = args.suppress_same_page
             USE_MODALITY_SPECIFIC_GATING = args.use_modality_specific
             ENABLE_MODALITY_DETECTION = args.enable_modality_detection
@@ -5134,11 +5448,30 @@ if __name__ == "__main__":
                 ENABLE_ORB_RELAX = True
             if args.disable_orb_relax:
                 ENABLE_ORB_RELAX = False
-            DEBUG_MODE = args.debug
-            AUTO_OPEN_RESULTS = args.auto_open
             # Metrics options
             _save_metrics = args.save_metrics_json
             _focus_pages = args.focus_pages
+        
+        # Validate required paths
+        if PDF_PATH is None:
+            pdf_env = os.getenv('DUPLICATE_DETECTOR_PDF_PATH')
+            if pdf_env:
+                PDF_PATH = Path(pdf_env)
+            else:
+                print("❌ Error: PDF path not specified")
+                print("   Use --pdf argument, DUPLICATE_DETECTOR_PDF_PATH environment variable, or config file")
+                sys.exit(1)
+        
+        if OUT_DIR is None:
+            output_env = os.getenv('DUPLICATE_DETECTOR_OUTPUT_DIR')
+            if output_env:
+                OUT_DIR = Path(output_env)
+            else:
+                OUT_DIR = Path.cwd() / "duplicate_detector_output"
+                print(f"⚠️  Output directory not specified, using: {OUT_DIR}")
+        
+        # Ensure output directory exists
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
         
         main()
         
