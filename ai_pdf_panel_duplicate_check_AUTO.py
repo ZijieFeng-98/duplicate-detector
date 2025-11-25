@@ -17,11 +17,23 @@ import cv2
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from wb_lane_normalization import (
-    normalize_wb_panel,
-    compute_lane_profiles,
-    lane_profile_set_distance,
-)
+# Western blot normalization (optional - may not be available in all deployments)
+try:
+    from wb_lane_normalization import (
+        normalize_wb_panel,
+        compute_lane_profiles,
+        lane_profile_set_distance,
+    )
+    WB_NORMALIZATION_AVAILABLE = True
+except ImportError:
+    WB_NORMALIZATION_AVAILABLE = False
+    # Create dummy functions to prevent errors
+    def normalize_wb_panel(*args, **kwargs):
+        raise NotImplementedError("wb_lane_normalization module not available")
+    def compute_lane_profiles(*args, **kwargs):
+        raise NotImplementedError("wb_lane_normalization module not available")
+    def lane_profile_set_distance(*args, **kwargs):
+        raise NotImplementedError("wb_lane_normalization module not available")
 
 # Tile detection module (optional)
 try:
@@ -2701,11 +2713,25 @@ def load_or_compute_wb_normalizations(panel_paths: List[Path]) -> Dict[str, dict
                 updated = True
             continue
 
-        normalized_image, norm_result = normalize_wb_panel(
-            image,
-            texture_threshold=WB_TEXTURE_SCORE_THRESHOLD,
-            min_vertical_lines=WB_MIN_VERTICAL_LINES,
-        )
+        if not WB_NORMALIZATION_AVAILABLE:
+            # Fallback: create empty result if module not available
+            from dataclasses import dataclass
+            @dataclass
+            class EmptyNormResult:
+                is_candidate = False
+                texture_score = 0.0
+                rotation_angle = 0.0
+                lane_count = 0
+                lane_regions = []
+                image_shape = image.shape[:2]
+            normalized_image = image
+            norm_result = EmptyNormResult()
+        else:
+            normalized_image, norm_result = normalize_wb_panel(
+                image,
+                texture_threshold=WB_TEXTURE_SCORE_THRESHOLD,
+                min_vertical_lines=WB_MIN_VERTICAL_LINES,
+            )
 
         normalized_path = None
         if norm_result.is_candidate:
@@ -2775,6 +2801,10 @@ def ensure_lane_profiles(info: Optional[dict]) -> List[np.ndarray]:
         info["_lane_profiles"] = []
         return []
 
+    if not WB_NORMALIZATION_AVAILABLE:
+        info["_lane_profiles"] = []
+        return []
+    
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     regions = [tuple(region) for region in info.get("lane_regions", [])]
     profiles = compute_lane_profiles(gray, regions)
@@ -2806,6 +2836,9 @@ def compute_wb_lane_distance(info_a: Optional[dict], info_b: Optional[dict]) -> 
     if not info_a or not info_b:
         return None
 
+    if not WB_NORMALIZATION_AVAILABLE:
+        return None
+    
     profiles_a = ensure_lane_profiles(info_a)
     profiles_b = ensure_lane_profiles(info_b)
 
